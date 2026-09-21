@@ -37,6 +37,7 @@ jobs:
         env:
           WORKBUDDY_REFRESH_TOKEN: ${{ secrets.WORKBUDDY_REFRESH_TOKEN }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          BARK_URL: ${{ secrets.BARK_URL }}
         run: python workbuddy_daily.py
 
       # ⚠️ 仅在【私有仓库】中持久化令牌状态；公开仓库会跳过，避免 RT 泄露
