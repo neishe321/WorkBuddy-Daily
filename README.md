@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 33 项自动化任务 · 🏫 开学季活动 · 📱 小程序任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 内置推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 35 项自动化任务 · 🏫 开学季活动 · 📱 小程序任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 三渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -19,7 +19,7 @@
 
 ## ✨ 这是什么
 
-一个脚本搞定 **WorkBuddy 成长中心 + 开学季活动 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 18 项成长任务（17 全自动）→ 8 项互动玩法 → 5 项开学季任务 + 大转盘抽奖 → 3 项小程序任务 → 自动领奖 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
+一个脚本搞定 **WorkBuddy 成长中心 + 开学季活动 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 18 项成长任务（17 全自动）→ 8 项互动玩法 → 5 项开学季任务 + 大转盘抽奖 → 5 项小程序任务 → 自动领奖 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
 
 > 🎯 一句话：**配一个刷新令牌，剩下交给它。**
 >
@@ -60,6 +60,7 @@ pip3 install requests
 | `WORKBUDDY_REFRESH_TOKEN` | ✅ | 每行一个 `手机号:AT:RT`（多账号换行分隔） |
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
+| `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人 webhook（或仅 key） |
 
 > 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
 
@@ -173,12 +174,13 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | `WORKBUDDY_REFRESH_TOKEN` | ✅ | 多账号刷新令牌，换行分隔，格式 `手机号:AT:RT`（AT 可留空）。首次运行自动生成 `wb_refresh_tokens.json` 并持续维护 |
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，内置 PushPlus 推送，运行结果推到微信 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx`（自建服务器换域名即可） |
+| `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人。填完整 webhook URL，或只填 key（自动补全域名） |
 
 ---
 
 ## 📦 任务清单
 
-> 总计 **35 项任务**（33 项全自动 + 2 项需人工），其中仅 1 项完全无法自动完成（公益捐款需真实转账）。
+> 总计 **37 项任务**（35 项全自动 + 2 项需人工），其中仅 1 项完全无法自动完成（公益捐款需真实转账）。
 >
 > 📌 另有 **微信公众号关注任务**（`wb_wechat_oa_subscribe_task`）——需真人扫码关注，脚本会检测并提示，不自动完成。
 
@@ -221,13 +223,17 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 > 🎰 **幸运大转盘**：查余额 → 循环抽奖到 0
 > 奖品：6 积分 / 66 积分 / 瑞幸 15 元券 / KFC OK 餐券 / KFC 冰淇淋券 / 酷狗会员月卡
 
-### 📱 小程序成长任务（3 项 · 全自动 · +400c+15e）
+### 📱 小程序成长任务（5 项 · 全自动 · +800c+25e）
 
-| # | 任务 | 奖励 |
-| :-: | :--- | :--- |
-| 1 | `Sequential_Tasks_1` 小程序内完成 1 次对话 | +100 积分 +5 能量 |
-| 2 | `Sequential_Tasks_2` 小程序内选中专家并完成对话 | **+200 积分** +5 能量 |
-| 3 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 |
+| # | 任务 | 奖励 | 说明 |
+| :-: | :--- | :--- | :--- |
+| 1 | `Sequential_Tasks_1` 完成 1 次对话 | +100 积分 +5 能量 | |
+| 2 | `Sequential_Tasks_2` 选中专家并完成对话 | +200 积分 +5 能量 | mp 指纹 `expert_actual_use` |
+| 3 | `Sequential_Tasks_3` 完成 5 次对话 | +300 积分 +5 能量 | 逐条累加，自动补差额 |
+| 4 | `Sequential_Tasks_4` 创建 1 个定时任务 | +100 积分 +5 能量 | 复用桌面口径 automation 事件 |
+| 5 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 | 需 `activityId` |
+
+> 🔗 Tasks_1~7 是**链式任务**：完成一环后次日零点解锁下一环（`task locked until <日期>`），脚本每次运行自动检测并推进。
 
 > 💡 这三项需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
 > 💡 判据上报走小程序指纹头族（`X-Client-Platform: mp-weixin` + `X-Client-Product: workbuddy-mp`），对齐官方 appservice 埋点。
@@ -248,10 +254,10 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | :--- | :-: | :-: | :-: |
 | 成长中心任务 | 18 | 17 | 1（公益专家，需捐款） |
 | 开学季活动 | 5 | 4 | 1（学生认证，需实名） |
-| 小程序任务 | 3 | 3 | 0 |
+| 小程序任务 | 5 | 5 | 0 |
 | 互动玩法 | 8 | 8 | 0 |
 | 每日签到 | 1 | 1 | 0 |
-| **合计** | **35** | **33** | **2** |
+| **合计** | **37** | **35** | **2** |
 
 > ℹ️ 成长中心任务会随活动更新。脚本内置**未覆盖任务检测**：遇到没适配的新任务会在日志中明确提示。
 
@@ -267,11 +273,13 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 - **🔗 稳定设备指纹**：每账号 md5 派生固定 machineId/sessionId，桌面事件指纹与真实客户端对齐。
 - **📡 多域上报**：桌面域 + Web 域 + 小程序域三通道事件上报，完整覆盖所有任务类型。
 - **📋 进度感知**：只上报缺口数量的事件，不重复提交已完成的进度。
+- **✅ accept 双重校验**：解析接口逐任务状态 + 回读验证 + 未落账自动逐个重试（服务端存在「请求成功但未登记」的形态）。
 - **🏫 开学季活动**：自动执行开学季限时任务（分享 / 对话 / 专家）+ 幸运大转盘抽奖。
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
 - **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
 - **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族，与官方小程序埋点一致。
-- **📢 双渠道推送**：PushPlus（微信）+ Bark（iOS）可同时配置，互不影响。
+- **📢 三渠道推送**：PushPlus（微信）+ Bark（iOS）+ 企业微信群机器人，可同时配置互不影响。
+  企业微信只需一个 webhook（群设置 → 群机器人 → 添加 → 复制 URL）。
 
 ---
 
