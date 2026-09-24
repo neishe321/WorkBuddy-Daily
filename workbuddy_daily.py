@@ -13,7 +13,7 @@
    🔐 Token 永续     只配一个刷新令牌变量，脚本自动续期（90 天滚动，永不过期）
    ✅ 成长任务       18 项云端/桌面全覆盖 + 轻量云专家（仅公益专家需真实捐款）
    🏫 开学季活动     分享/对话/桌面对话/专家 + 幸运大转盘（含瑞幸/KFC/酷狗实物券）
-   📱 小程序任务     5 项：对话/专家/5次对话/定时任务/校园日（共 +800c+25e，链式每日解锁）
+   📱 小程序任务     8 项：Tasks_1~7 链式任务 + 校园日（已验证 +800c+20e，每日零点解锁一环）
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
    🎁 自动领奖       扫描全部已完成任务自动领取；completed 未领的自动补领
@@ -74,13 +74,16 @@
       分享活动给好友 · 与AI对话3次 · 桌面端对话1次 · 召唤开学季专家
       ❌ 学生认证（需微信实名，人工环节）
       🎰 幸运大转盘：抽到余额为 0（积分 6/66 + 瑞幸/KFC/酷狗实物券）
-   📱 小程序成长任务（5 项，需 X-Client-Platform: miniprogram 头）
+   📱 小程序成长任务（8 项，需 X-Client-Platform: miniprogram 头）
       Sequential_Tasks_1 完成 1 次对话（+100c+5e）
       Sequential_Tasks_2 选中专家并完成对话（+200c+5e）
       Sequential_Tasks_3 完成 5 次对话（+300c+5e）
       Sequential_Tasks_4 创建 1 个定时任务（+100c+5e）
+      Sequential_Tasks_5 使用 1 次 GLM5.2（+100c+5e）
+      Sequential_Tasks_6 完成 10 次对话
+      Sequential_Tasks_7 体验灵感功能
       school_season 校园日（+100c+5e）
-      ※ Tasks_1~7 为链式任务，完成一环后次日零点解锁下一环
+      ※ Tasks_1~7 为链式任务，完成一环后次日零点解锁下一环（脚本自动推进，日志给出解锁日期）
    🎮 互动玩法（8 项）
       抽奖 · 盲盒 · Buddy信息 · 派猫猫旅行 · 连签兑换 · 补签卡 · 礼包补偿 · 徽章
 
@@ -90,6 +93,7 @@
    · 桌面任务：Windows 走真实桌面换血；非 Windows 自动降级为指纹上报（无需真实桌面端）
    · 夜猫子：官方规则为「每日 1 次 × 累计 3 天」，有响应即停，不空跑
    · accept 校验：解析接口逐任务状态 + 回读验证，未落账的自动逐个重试
+   · 前置依赖：accept 报 prerequisite not met 时先补跑前置任务（如先领养首只 Buddy）再重试
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
    · 数据文件：wb_refresh_tokens.json 自动生成与维护，无需手动管理
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
@@ -99,7 +103,7 @@
 🔒 隐私说明
    脚本不含任何账号、手机号、Token 或设备信息，所有凭据均由环境变量注入。
 """
-import sys, os, json, time, uuid, base64, glob, hashlib, glob as _glob, shutil, subprocess, threading, queue
+import sys, os, re, json, time, uuid, base64, glob, hashlib, glob as _glob, shutil, subprocess, threading, queue
 import requests
 
 
@@ -145,6 +149,9 @@ TASK_NAME_CN = {
     "Sequential_Tasks_2": "小程序专家对话",
     "Sequential_Tasks_3": "小程序对话5次",
     "Sequential_Tasks_4": "小程序定时任务",
+    "Sequential_Tasks_5": "小程序GLM5.2",
+    "Sequential_Tasks_6": "小程序对话10次",
+    "Sequential_Tasks_7": "小程序灵感功能",
     "school_season": "校园日活动",
 }
 
@@ -693,11 +700,13 @@ def t_sign(s, uid, nick, log):
 
 
 def t_accept_all(s, uid, nick, log):
-    """接受全部未接受任务：批量 accept → 解析逐项结果 → 未落账的逐个重试。
+    """接受全部未接受任务：批量 accept → 解析逐项结果 → 前置依赖补救 → 未落账逐个重试。
 
     ⚠️ accept 响应是**逐任务**返回状态：
         {"code":0, "data":{"results":[{"task_code":..,"status":"accepted"|"error","message":..}]}}
     顶层 code=0 只代表请求送达，不代表每项都登记成功（实测存在整体 error 的形态）。
+    ⚠️ 部分任务带前置条件：message 为 `prerequisite not met: <task_code>`（如 first_buddy
+       表示该账号还没有 Buddy 实例），此时先补跑前置任务再重试登记。
     """
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
     todo = [t.get("task_code") for t in r.get("data", {}).get("tasks", [])
@@ -706,13 +715,14 @@ def t_accept_all(s, uid, nick, log):
         return
     # ---- 1) 批量接受 + 解析逐项结果 ----
     resp = {}
+    bad = []
     try:
         r2 = s.post(BASE + "/v2/activity/growth/tasks/accept",
                     json={"task_codes": todo}, timeout=20, verify=False)
         d2 = r2.json()
         for x in ((d2.get("data") or {}).get("results") or []):
             if isinstance(x, dict) and x.get("task_code"):
-                resp[x["task_code"]] = (x.get("status") or "", (x.get("message") or "")[:50])
+                resp[x["task_code"]] = (x.get("status") or "", x.get("message") or "")
         ok = [c for c in todo if resp.get(c, ("", ""))[0] == "accepted"]
         bad = [(c, resp[c][0], resp[c][1]) for c in todo if c in resp and resp[c][0] != "accepted"]
         nolog = [c for c in todo if c not in resp]
@@ -720,11 +730,26 @@ def t_accept_all(s, uid, nick, log):
             len(todo), len(ok), len(bad) + len(nolog),
             ("（%d 项无返回）" % len(nolog)) if nolog else ""))
         for c, st, m in bad[:6]:
-            log("      ✗ %s: %s %s" % (c, st, m))
+            log("      ✗ %s: %s %s" % (c, st, m[:70]))
         if len(bad) > 6:
             log("      ...另 %d 项" % (len(bad) - 6))
     except Exception as e:
         log("   📋批量接受异常: %s" % str(e)[:60])
+    # ---- 1.5) 前置依赖补救：message 形如 "prerequisite not met: first_buddy (...)" ----
+    need = {}
+    for c, st, m in bad:
+        if "prerequisite not met:" in m:
+            pcode = m.split("prerequisite not met:", 1)[1].strip().split(" ")[0].strip("()[]")
+            need.setdefault(pcode, []).append(c)
+    for pcode, ptasks in need.items():
+        log("   🧩 %d 项待前置「%s」满足: %s" % (len(ptasks), pcode, ",".join(ptasks[:6])))
+        if pcode == "first_buddy":
+            if ensure_first_buddy(s, uid, nick, log):
+                log("      ✅ Buddy 已就绪，进入重试登记")
+            else:
+                log("      ⚠️ 服务端仍无 Buddy 实例：该账号需先在桌面端/小程序完成一次领养引导，本次 %d 项保持未登记" % len(ptasks))
+        else:
+            log("      ⚠️ 前置「%s」脚本暂无法自动完成" % pcode)
     # ---- 2) 回读验证 + 逐个重试（上游存在 200+OK 但未落账的形态）----
     time.sleep(2)
     pending = [c for c in todo if prog(s, c)[0] in (None, "not_accepted")]
@@ -1493,12 +1518,33 @@ def t_makeup(s, uid, nick, log):
         log("   🩹补签检查异常: %s" % str(e)[:50])
 
 
-def t_first_buddy(s, uid, nick, log):
-    """新账号：领取第一只Buddy"""
-    st, cur, tgt = prog(s, "first_buddy")
-    if st in ("completed", "claimed"):
-        log("   🐱首只Buddy: 已 %s %s/%s" % (st, cur, tgt))
-        return
+def has_buddy(s):
+    """服务端是否已存在 Buddy 实例（旅行 / 其他任务 accept 的真实前置判据）。
+
+    返回 True / False / None（None = 查询失败，状态未知）。
+    """
+    try:
+        v = s.get(BASE + "/v2/activity/growth/buddy/visible", timeout=20, verify=False).json()
+        d = v.get("data") or {}
+        if "has_buddy" in d:
+            return bool(d.get("has_buddy"))
+        info = s.get(BASE + "/v2/activity/growth/buddy/info", timeout=20, verify=False).json()
+        return bool((info.get("data") or {}).get("buddy"))
+    except Exception:
+        return None
+
+
+def ensure_first_buddy(s, uid, nick, log):
+    """确保账号有 Buddy 实例 —— 其余任务 accept 的前置条件。
+
+    服务端对无 Buddy 实例的账号会拒绝登记这些任务：
+        {"status": "error", "message": "prerequisite not met: first_buddy (no buddy instance)"}
+    真实判据是 /buddy/visible 的 has_buddy，而非 first_buddy 任务的 accept_status（任务可
+    已 claimed 但实例缺失）。链路：buddy_agreement_view 上报 → POST /buddy/agreement
+    → POST /buddy/first。返回 True 表示前置已满足。
+    """
+    if has_buddy(s) is True:
+        return True
     try:
         report(s, uid, nick, [{"eventCode": "buddy_agreement_view", "timestamp": int(time.time() * 1000)}])
         time.sleep(2)
@@ -1509,9 +1555,24 @@ def t_first_buddy(s, uid, nick, log):
         credit = (r.get("data") or {}).get("credit", 0)
         energy = (r.get("data") or {}).get("energy", 0)
         log("   🐱首只Buddy: %s (credit=+%s energy=+%s)" % (
-            "成功" if r.get("code") == 0 else str(r.get("msg", ""))[:40], credit, energy))
+            "领养成功" if r.get("code") == 0 else str(r.get("msg", ""))[:40], credit, energy))
+        time.sleep(2)
+        return has_buddy(s) is True
     except Exception as e:
         log("   🐱首只Buddy异常: %s" % str(e)[:40])
+        return False
+
+
+def t_first_buddy(s, uid, nick, log):
+    """领取第一只Buddy（在 t_accept_all 之前执行，满足其他任务的前置条件）"""
+    st, cur, tgt = prog(s, "first_buddy")
+    have = has_buddy(s)
+    if st in ("completed", "claimed") and have is not False:
+        log("   🐱首只Buddy: 已 %s %s/%s" % (st, cur, tgt))
+        return
+    if have is False and st in ("completed", "claimed"):
+        log("   🐱首只Buddy: 任务已 %s，但服务端无 Buddy 实例 → 尝试补建" % st)
+    ensure_first_buddy(s, uid, nick, log)
 
 
 def t_workstation(s, uid, nick, log, tok):
@@ -1654,6 +1715,25 @@ def mp_expert_use_events(uid, nick, expert_id, expert_name, conv_id, activity_id
     return evs
 
 
+def mp_model_chat_event(uid, nick, conv_id, model_id="glm-5.2", model_name="GLM-5.2"):
+    """Sequential_Tasks_5 判据：mini chat_request_send + 模型字段（上游 mpsrc 实测形状）。"""
+    ev = mp_chat_event(uid, nick, conv_id)
+    ev["requestModelId"] = model_id
+    ev["requestModelName"] = model_name
+    return ev
+
+
+def mp_playbook_events(uid, nick, case_id="01-ProductDesign", case_name="产品设计"):
+    """Sequential_Tasks_7 判据：mp 指纹 playbook_cta_click + playbook_prompt_send。"""
+    conv = "wb2api-mp-pb-" + str(uuid.uuid4())
+    base = {"id": case_id, "name": case_name, "type": "document",
+            "categoryId": "", "categoryName": "", "skills": "", "skillNames": ""}
+    cta = dict(base, eventCode="playbook_cta_click", source="discover", position=1, extVersion="2.2.8")
+    send = dict(base, eventCode="playbook_prompt_send", source="discover", promptLength=96,
+                isOfficial=1, conversationId=conv, extVersion="2.2.8")
+    return [cta, send]
+
+
 def mp_mini_expert_event(uid, nick, expert_id, expert_name):
     """Sequential_Tasks_2 判据：mp 指纹 expert_actual_use（上游小程序源码实测形状）。
 
@@ -1707,23 +1787,36 @@ def _mp_prog(s, code):
     return None, None, None
 
 
-def _mp_accept(s, code, log=None):
-    """小程序口径接受任务（缺头会返回 task not found）。失败时打印服务端原因。"""
+def _mp_accept_res(s, code):
+    """小程序口径 accept，返回 (ok, status, message)。缺 mp 头会返回 task not found。"""
     try:
         r = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": [code]},
                    timeout=20, verify=False, headers=MP_HEADER)
         d = r.json()
         results = (d.get("data") or {}).get("results") or []
         status = (results[0].get("status") or "") if results else (d.get("msg") or "")
-        msg = (results[0].get("message") or "")[:50] if results else ""
-        ok = r.status_code == 200 and status == "accepted"
-        if not ok and log:
-            log("      ✗ accept %s: %s %s" % (code, status or "无返回", msg))
-        return ok
+        msg = (results[0].get("message") or "") if results else ""
+        return (r.status_code == 200 and status == "accepted"), status, msg
     except Exception as e:
-        if log:
-            log("      ✗ accept %s 异常: %s" % (code, str(e)[:50]))
+        return False, "", str(e)[:80]
+
+
+def _mp_accept(s, code, log=None):
+    """小程序口径接受任务，失败时打印服务端原因（保留 bool 返回的兼容包装）。"""
+    ok, status, msg = _mp_accept_res(s, code)
+    if not ok and log:
+        log("      ✗ accept %s: %s %s" % (code, status or "无返回", msg[:50]))
+    return ok
+
+
+def _mp_locked_hint(log, label, msg, indent="   "):
+    """链式任务未解锁时输出人类可读提示（含解锁日期）。命中返回 True。"""
+    m = re.search(r"locked until (\d{4}-\d{2}-\d{2})", msg or "")
+    if not m:
         return False
+    log("%s%s: 今日未解锁（链式任务每日零点解锁下一环，%s 零点自动解锁，下次运行自动推进）"
+        % (indent, label, m.group(1)))
+    return True
 
 
 def _mp_claim(s, code, log):
@@ -1757,8 +1850,11 @@ def _mp_do_task(s, uid, nick, code, log, events_fn, label, target=1):
             log("   %s: 已领取，跳过" % label)
         return
     if st == "not_accepted":
-        if not _mp_accept(s, code, log):
-            log("   %s: accept 失败，跳过" % label)
+        ok, a_status, a_msg = _mp_accept_res(s, code)
+        if not ok:
+            log("      ✗ accept %s: %s %s" % (code, a_status or "无返回", a_msg[:50]))
+            if not _mp_locked_hint(log, label, a_msg):
+                log("   %s: accept 失败，跳过" % label)
             return
         time.sleep(WRITE_GAP)
     # 缺口计算：cur 可能为 None（未激活时 progress 全空）→ 用 target 兜底
@@ -1846,8 +1942,11 @@ def t_sequential_tasks_4(s, uid, nick, log):
             log("   小程序定时任务: 已领取，跳过")
         return
     if st == "not_accepted":
-        if not _mp_accept(s, "Sequential_Tasks_4", log):
-            log("   小程序定时任务: 今日未解锁（链式任务每日零点解锁下一环，明日自动重试）")
+        ok, a_status, a_msg = _mp_accept_res(s, "Sequential_Tasks_4")
+        if not ok:
+            log("      ✗ accept Sequential_Tasks_4: %s %s" % (a_status or "无返回", a_msg[:50]))
+            if not _mp_locked_hint(log, "小程序定时任务", a_msg):
+                log("   小程序定时任务: accept 失败，跳过")
             return
         time.sleep(WRITE_GAP)
     _evs(0)
@@ -1860,6 +1959,28 @@ def t_sequential_tasks_4(s, uid, nick, log):
             _mp_claim(s, "Sequential_Tasks_4", log)
     else:
         log("   小程序定时任务: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
+
+
+def t_sequential_tasks_5(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_5：使用 1 次 GLM5.2 模型（+100c+5e）"""
+    def _evs(i):
+        return [mp_model_chat_event(uid, nick, "wbmp5-%s-%d" % (uuid.uuid4(), i))]
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_5", log, _evs, "小程序GLM5.2", target=1)
+
+
+def t_sequential_tasks_6(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_6：完成 10 次对话（target 以服务端下发为准）"""
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_6", log,
+                _mp_chat_evs(uid, nick, "wbmp6"), "小程序对话×10", target=10)
+
+
+def t_sequential_tasks_7(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_7：体验灵感功能"""
+    def _evs(i):
+        evs = mp_playbook_events(uid, nick)
+        report_desktop_events(s, uid, nick, evs)   # PC 口径补一发（判据疑 PC/mp 双侧）
+        return evs
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_7", log, _evs, "小程序灵感功能", target=1)
 
 
 def t_school_season(s, uid, nick, log):
@@ -1876,7 +1997,8 @@ def t_unknown_tasks(s, uid, nick, log):
              "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_1", "expert_5",
              "template_5", "automation_1", "workstation_expert",
              "Sequential_Tasks_1", "Sequential_Tasks_2", "Sequential_Tasks_3",
-             "Sequential_Tasks_4", "school_season"}
+             "Sequential_Tasks_4", "Sequential_Tasks_5",
+             "Sequential_Tasks_6", "Sequential_Tasks_7", "school_season"}
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
     for t in r.get("data", {}).get("tasks", []):
         if not isinstance(t, dict):
@@ -2415,6 +2537,8 @@ def run_account(idx, acc, do_desktop):
         log("  🖥️ 桌面任务: 已完成（RichMeow/skill_1），跳过")
     # 任务
     log("  ☁️ ── 云端任务 ──")
+    # 前置：无 Buddy 实例时，其余任务 accept 会被服务端拒绝（prerequisite not met: first_buddy）
+    t_first_buddy(s, uid, nick, log)
     t_accept_all(s, uid, nick, log)
     t_sign(s, uid, nick, log)
     t_team_3(s, uid, nick, log)
@@ -2431,6 +2555,9 @@ def run_account(idx, acc, do_desktop):
     t_sequential_tasks_2(s, uid, nick, log)
     t_sequential_tasks_3(s, uid, nick, log)
     t_sequential_tasks_4(s, uid, nick, log)
+    t_sequential_tasks_5(s, uid, nick, log)
+    t_sequential_tasks_6(s, uid, nick, log)
+    t_sequential_tasks_7(s, uid, nick, log)
     t_school_season(s, uid, nick, log)
     t_badges(s, uid, nick, log)
     t_lottery(s, uid, nick, log)
@@ -2439,7 +2566,6 @@ def run_account(idx, acc, do_desktop):
     t_travel(s, uid, nick, log)
     t_redeem(s, uid, nick, log, streak.get("days"))
     t_gift_compensation(s, uid, nick, log)
-    t_first_buddy(s, uid, nick, log)
     t_makeup(s, uid, nick, log)
     t_workstation(s, uid, nick, log, tok)
     t_unknown_tasks(s, uid, nick, log)

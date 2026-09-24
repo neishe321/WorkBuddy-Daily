@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 35 项自动化任务 · 🏫 开学季活动 · 📱 小程序任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 三渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 38 项自动化任务 · 🏫 开学季活动 · 📱 小程序任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 三渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -19,7 +19,7 @@
 
 ## ✨ 这是什么
 
-一个脚本搞定 **WorkBuddy 成长中心 + 开学季活动 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 18 项成长任务（17 全自动）→ 8 项互动玩法 → 5 项开学季任务 + 大转盘抽奖 → 5 项小程序任务 → 自动领奖 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
+一个脚本搞定 **WorkBuddy 成长中心 + 开学季活动 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 18 项成长任务（17 全自动）→ 8 项互动玩法 → 5 项开学季任务 + 大转盘抽奖 → 8 项小程序任务 → 自动领奖 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
 
 > 🎯 一句话：**配一个刷新令牌，剩下交给它。**
 >
@@ -84,8 +84,22 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 ### ⚠️ 令牌状态与安全（重要）
 - 脚本每次续期都会**轮换刷新令牌**并写入 `wb_refresh_tokens.json`。
 - 工作流内置安全判断：**仅在「私有仓库」中**把 `wb_refresh_tokens.json` 提交回仓库；**公开仓库会自动跳过**，避免 RT 泄露。
-- **强烈建议**：如果你 Fork 本仓库用于部署，**请把 Fork 后的仓库设为 Private**（Settings → General → 拉到底 → Change visibility → Private），这样令牌才能安全持久化，续期不中断。
-- 若使用公开仓库，令牌不会持久化，**每次运行都依赖 `WORKBUDDY_REFRESH_TOKEN` 这个 Secret 提供最新 RT**——需自行保证其不过期。
+- ⚠️ **GitHub 不允许修改 Fork 仓库的可见性**（提示原文：*For security reasons, you cannot change the visibility of a fork*）。所以想要「私有仓库 + 令牌持久化」，**请不要用 Fork**，改用以下任一方式：
+
+  **方式 A：Import（推荐，最省事）**
+  1. 打开 <https://github.com/new/import>
+  2. 在 *Your old repository's clone URL* 填入 `https://github.com/L0NE-6/WorkBuddy-Daily`
+  3. 新仓库名称自取，可见性选 **Private**
+  4. 点 **Begin import**，等导入完成即可
+
+  **方式 B：手动上传**
+  1. 新建一个 **Private** 仓库
+  2. 上传 `workbuddy_daily.py`、`workbuddy_login.py`、`requirements.txt`、`README.md`
+  3. 手动创建 `.github/workflows/workbuddy.yml`（内容照抄本仓库）
+
+  两种方式得到的是**独立仓库**（不是 Fork），令牌才能安全持久化、续期不中断。
+
+- 若继续使用**公开仓库**（含公开 Fork），令牌不会持久化，**每次运行都依赖 `WORKBUDDY_REFRESH_TOKEN` 这个 Secret 提供最新 RT**——需自行保证其不过期（RT 一般 30 天滚动，建议每月更新一次）。
 
 ---
 
@@ -180,7 +194,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 
 ## 📦 任务清单
 
-> 总计 **37 项任务**（35 项全自动 + 2 项需人工），其中仅 1 项完全无法自动完成（公益捐款需真实转账）。
+> 总计 **40 项任务**（38 项全自动 + 2 项需人工），其中仅 1 项完全无法自动完成（公益捐款需真实转账）。
 >
 > 📌 另有 **微信公众号关注任务**（`wb_wechat_oa_subscribe_task`）——需真人扫码关注，脚本会检测并提示，不自动完成。
 
@@ -208,6 +222,8 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 18 | ~~公益专家~~ | ❌ **需真实捐款，脚本不做** |
 | — | ~~工作台搭建师~~ | ⚠️ **服务端已下线**（脚本仍兼容，出现时会自动处理） |
 
+> 🔗 **前置条件**：`first_buddy`（领取Buddy）是其余 17 项任务的登记前置——服务端对**没有 Buddy 实例**的账号会拒绝这些任务的 accept（`prerequisite not met: first_buddy (no buddy instance)`）。脚本已把领养链路提到云端任务最前面，并在 accept 报前置错误时**自动补跑前置再重试登记**。
+
 ### 🏫 开学季活动（5 项 · 4 项全自动 + 幸运大转盘）
 
 | # | 任务 | 说明 |
@@ -223,17 +239,22 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 > 🎰 **幸运大转盘**：查余额 → 循环抽奖到 0
 > 奖品：6 积分 / 66 积分 / 瑞幸 15 元券 / KFC OK 餐券 / KFC 冰淇淋券 / 酷狗会员月卡
 
-### 📱 小程序成长任务（5 项 · 全自动 · +800c+25e）
+### 📱 小程序成长任务（8 项 · 全自动 · 链式每日解锁）
 
-| # | 任务 | 奖励 | 说明 |
+| # | 任务 | 奖励 | 判定依据 |
 | :-: | :--- | :--- | :--- |
-| 1 | `Sequential_Tasks_1` 完成 1 次对话 | +100 积分 +5 能量 | |
+| 1 | `Sequential_Tasks_1` 完成 1 次对话 | +100 积分 +5 能量 | mini `chat_request_send` |
 | 2 | `Sequential_Tasks_2` 选中专家并完成对话 | +200 积分 +5 能量 | mp 指纹 `expert_actual_use` |
 | 3 | `Sequential_Tasks_3` 完成 5 次对话 | +300 积分 +5 能量 | 逐条累加，自动补差额 |
-| 4 | `Sequential_Tasks_4` 创建 1 个定时任务 | +100 积分 +5 能量 | 复用桌面口径 automation 事件 |
-| 5 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 | 需 `activityId` |
+| 4 | `Sequential_Tasks_4` 创建 1 个定时任务 | +100 积分 +5 能量 | 桌面口径 `automated_task_create_suc` |
+| 5 | `Sequential_Tasks_5` 使用 1 次 GLM5.2 | +100 积分 +5 能量 | mini chat + 模型字段 |
+| 6 | `Sequential_Tasks_6` 完成 10 次对话 | — | 同 Tasks_1/3 形状，target=10 |
+| 7 | `Sequential_Tasks_7` 体验灵感功能 | — | mp 指纹 `playbook_cta_click` + `playbook_prompt_send` |
+| 8 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 | 需 `activityId` |
 
-> 🔗 Tasks_1~7 是**链式任务**：完成一环后次日零点解锁下一环（`task locked until <日期>`），脚本每次运行自动检测并推进。
+> 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环（accept 返回 `task locked until <日期>`），脚本每次运行自动检测并推进，无需人工干预；日志会直接给出解锁日期与「今日未解锁」提示，不会被当成失败。
+>
+> ✅ 已验证到账：Tasks_1~4 + 校园日 = **+800 积分 +20 能量**（Tasks_5~7 待链式解锁）
 
 > 💡 这三项需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
 > 💡 判据上报走小程序指纹头族（`X-Client-Platform: mp-weixin` + `X-Client-Product: workbuddy-mp`），对齐官方 appservice 埋点。
@@ -254,10 +275,10 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | :--- | :-: | :-: | :-: |
 | 成长中心任务 | 18 | 17 | 1（公益专家，需捐款） |
 | 开学季活动 | 5 | 4 | 1（学生认证，需实名） |
-| 小程序任务 | 5 | 5 | 0 |
+| 小程序任务 | 8 | 8 | 0 |
 | 互动玩法 | 8 | 8 | 0 |
 | 每日签到 | 1 | 1 | 0 |
-| **合计** | **37** | **35** | **2** |
+| **合计** | **40** | **38** | **2** |
 
 > ℹ️ 成长中心任务会随活动更新。脚本内置**未覆盖任务检测**：遇到没适配的新任务会在日志中明确提示。
 
@@ -274,6 +295,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 - **📡 多域上报**：桌面域 + Web 域 + 小程序域三通道事件上报，完整覆盖所有任务类型。
 - **📋 进度感知**：只上报缺口数量的事件，不重复提交已完成的进度。
 - **✅ accept 双重校验**：解析接口逐任务状态 + 回读验证 + 未落账自动逐个重试（服务端存在「请求成功但未登记」的形态）。
+- **🧩 前置依赖自动补救**：accept 逐项 `message` 里解析 `prerequisite not met: <任务>`，先补跑前置任务（如首只 Buddy 领养）再重试登记，新账号不再卡在「17 项未落账」。
 - **🏫 开学季活动**：自动执行开学季限时任务（分享 / 对话 / 专家）+ 幸运大转盘抽奖。
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
 - **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
