@@ -234,6 +234,8 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 4 | 召唤开学季专家 | BackToSchool 专家事件 |
 | 5 | ~~学生认证~~ | ❌ 微信实名认证，人工环节 |
 
+> 📅 **活动期自适应**：脚本以服务端 `in_period` 判定活动是否进行中，结束后自动跳过（日志提示「开学季活动非进行期」），不会误报成失败。**2026 开学季活动已于 9 月下旬结束** —— 4 项可自动任务均已到账（`claimed`），学生认证为人工项；`school_season` 校园日已从 mp 任务列表撤下。
+
 > 🔗 **专家任务**：召唤 4 事件链（点击 → 召唤 → 使用 → 对话），与官方小程序埋点同构。
 >
 > 🎰 **幸运大转盘**：查余额 → 循环抽奖到 0
@@ -250,11 +252,11 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 5 | `Sequential_Tasks_5` 使用 1 次 GLM5.2 | +100 积分 +5 能量 | mini chat + 模型字段 |
 | 6 | `Sequential_Tasks_6` 完成 10 次对话 | — | 同 Tasks_1/3 形状，target=10 |
 | 7 | `Sequential_Tasks_7` 体验灵感功能 | — | mp 指纹 `playbook_cta_click` + `playbook_prompt_send` |
-| 8 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 | 需 `activityId` |
+| 8 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 | 需 `activityId`（开学季已结束，任务已从列表撤下，奖励此前已到账） |
 
 > 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环（accept 返回 `task locked until <日期>`），脚本每次运行自动检测并推进，无需人工干预；日志会直接给出解锁日期与「今日未解锁」提示，不会被当成失败。
 >
-> ✅ 已验证到账：Tasks_1~4 + 校园日 = **+800 积分 +20 能量**（Tasks_5~7 待链式解锁）
+> ✅ 已验证到账：Tasks_1~4 + 校园日 = **+800 积分 +20 能量**；**Tasks_5 已 claimed**（+100 积分 +5 能量），Tasks_6 已下发并锁定至次日零点、Tasks_7 待下发，均由链式机制自动推进
 
 > 💡 这三项需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
 > 💡 判据上报走小程序指纹头族（`X-Client-Platform: mp-weixin` + `X-Client-Product: workbuddy-mp`），对齐官方 appservice 埋点。
