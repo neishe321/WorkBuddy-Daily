@@ -96,6 +96,8 @@
    · 夜猫子：官方规则为「每日 1 次 × 累计 3 天」，有响应即停，不空跑
    · accept 校验：解析接口逐任务状态 + 回读验证，未落账的自动逐个重试
    · 前置依赖：accept 报 prerequisite not met 时先补跑前置任务（如先领养首只 Buddy）再重试
+   · 真实会话 id：专家/技能任务的 requestId/messageId 取自真实对话的服务端消息 id（cmb- 形态）
+   · 真实场景表：模板任务取服务端 /console/as/support/scenes 的 id（拉不到回落内置表）
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
    · 数据文件：wb_refresh_tokens.json 自动生成与维护，无需手动管理
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
@@ -239,6 +241,7 @@ def get_template_scenes(count=5):
 THEME_KEY = "theme-tkmw7j"                   # 和平精英激战金秋
 LIB_DOC_URL = "https://www.workbuddy.cn/space/d/o0KWYeynteVv06UnAZqIFm"
 SKILL_NAME = "algorithmic-trading"
+SKILL_FALLBACK = ("skill_2097350077599879168", "润泽小馆·日报撰写")   # 上游实测可点亮的技能 id
 INFO_BACKUP = os.path.join(os.path.expanduser("~"), "AppData", "Local", "CodeBuddyExtension", "Data", "Public", "auth", "workbuddy-desktop.info")
 
 # ---------- 账号 ----------
@@ -603,7 +606,12 @@ def report(s, uid, nick, events):
         return 0
 
 
-def webchat(s, conv_name, prompt, meta=None, model="glm-5.2"):
+def webchat2(s, conv_name, prompt, meta=None, model="glm-5.2"):
+    """真实对话：返回 (conversationId, 回复正文, 服务端消息id)。
+
+    服务端消息 id 取 SSE 首块的 "id"（形如 cmb-<32hex>）——上游 panel 实测：专家/技能类
+    任务的 requestId / messageId 必须是真实会话的服务端 id，自造 uuid 不计数。
+    """
     conv = s.post(BASE + "/console/webchat/conversations", json={"name": conv_name + "-" + str(uuid.uuid4())[:8]},
                   timeout=20, verify=False).json()
     conv_id = conv.get("data", {}).get("conversationId", "")
@@ -612,7 +620,7 @@ def webchat(s, conv_name, prompt, meta=None, model="glm-5.2"):
     if meta:
         payload["_meta"] = meta
     headers = dict(s.headers); headers["Accept"] = "text/event-stream"
-    txt = ""
+    txt = ""; srv_mid = ""
     try:
         with s.post(BASE + "/console/chat/completions", json=payload, timeout=90, verify=False,
                     stream=True, headers=headers) as r:
@@ -623,6 +631,8 @@ def webchat(s, conv_name, prompt, meta=None, model="glm-5.2"):
                         break
                     try:
                         jj = json.loads(d)
+                        if not srv_mid and jj.get("id"):
+                            srv_mid = str(jj["id"])
                         for c in jj.get("choices", []):
                             cp = c.get("delta", {}).get("content", "")
                             if cp:
@@ -631,6 +641,12 @@ def webchat(s, conv_name, prompt, meta=None, model="glm-5.2"):
                         pass
     except Exception:
         pass
+    return conv_id, txt, srv_mid
+
+
+def webchat(s, conv_name, prompt, meta=None, model="glm-5.2"):
+    """真实对话（兼容包装）：返回 (conversationId, 回复正文)。"""
+    conv_id, txt, _ = webchat2(s, conv_name, prompt, meta=meta, model=model)
     return conv_id, txt
 
 
@@ -926,24 +942,41 @@ def t_expert_5(s, uid, nick, log):
     log("   召唤5次专家: %s %s/%s" % (st, cur, tgt))
 
 
+def _fetch_scenes(s):
+    """GET /console/as/support/scenes → [(id, name)]；拉不到则用内置表（实测线上 id）。"""
+    try:
+        r = s.get(BASE + "/console/as/support/scenes?locale=zh-CN", timeout=20, verify=False).json()
+        out = [(str(x["id"]), x.get("name") or "")
+               for x in ((r.get("data") or {}).get("scenes") or []) if x.get("id") is not None]
+        if out:
+            return out
+    except Exception:
+        pass
+    return [("0", "幻灯片"), ("4", "深度研究"), ("8", "数据分析"), ("16", "设计"), ("20", "日常开发")]
+
+
 def t_template_5(s, uid, nick, log):
-    """使用5个模板：批量遥测"""
-    scenes = [{"id": "01-ProductDesign", "name": "产品设计"}, {"id": "02-Marketing", "name": "营销文案"},
-              {"id": "03-DataAnalysis", "name": "数据分析"}, {"id": "04-CodeReview", "name": "代码审查"},
-              {"id": "05-Report", "name": "报告撰写"}]
-    for i, sc in enumerate(scenes):
+    """使用5个模板：真实场景 id（/console/as/support/scenes）+ 事件组上报
+
+    上游实测：一组 agent_task_created_with_template + template_used 计 1/5 进度；
+    template_id 服务端不校验真实性，但用真实场景 id 更稳（旧版写死的 01-ProductDesign
+    形态并不存在于线上场景表）。
+    """
+    scenes = _fetch_scenes(s)[:5]
+    for tid, tname in scenes:
         st, cur, tgt = prog(s, "template_5")
         if st in ("completed", "claimed") or (cur or 0) >= (tgt or 5):
             break
-        tid = sc["id"]
         report(s, uid, nick, [
             {"eventCode": "agent_task_created", "source": "CLOUD", "name": "", "mode": "craft",
              "requestModelId": "default", "action": tid, "has_template": True, "template_id": tid,
-             "template_name": sc["name"]},
-            {"eventCode": "agent_task_created_with_template", "templateId": tid, "templateName": sc["name"],
-             "isCustomModel": True, "id": tid, "name": sc["name"]},
+             "template_name": tname},
+            {"eventCode": "agent_task_created_with_template", "templateId": tid, "templateName": tname,
+             "isCustomModel": True, "id": tid, "name": tname},
+            {"eventCode": "template_used", "templateId": tid, "templateName": tname,
+             "id": tid, "name": tname, "source": "growth-center"},
             {"eventCode": "playbook_prompt_send", "ext1": str(uuid.uuid4()), "requestId": str(uuid.uuid4()),
-             "id": tid, "name": sc["name"], "type": "other", "promptLength": 30, "isOfficial": 1,
+             "id": tid, "name": tname, "type": "other", "promptLength": 30, "isOfficial": 1,
              "source": "growth-center"}])
         time.sleep(2)
     st, cur, tgt = prog(s, "template_5")
@@ -999,8 +1032,11 @@ def t_lottery(s, uid, nick, log):
             rr = s.post(BASE + "/v2/activity/growth/lottery/draw",
                         json={"client_token": "draw-" + str(uuid.uuid4())}, timeout=20, verify=False).json()
             if rr.get("code") == 0:
-                prize = rr.get("data", {}).get("prize_name", rr.get("data", {}).get("name", "?"))
-                won.append(str(prize))
+                dd = rr.get("data", {})
+                prize = str(dd.get("prize_name", dd.get("name", "?")))
+                if dd.get("prize_type") == "physical":
+                    prize += "（实物奖，需在成长中心填写收货地址）"
+                won.append(prize)
             else:
                 log("   🎰抽奖失败: %s" % str(rr.get("msg", ""))[:40])
                 break
@@ -1094,10 +1130,27 @@ def t_travel(s, uid, nick, log):
 
 
 def t_redeem(s, uid, nick, log, streak_days=None):
-    """兑换奖励：按连签档位（7d/14d/28d）"""
+    """连登奖励兑换（7d/14d/28d 三档）
+
+    以服务端 `redemption_status` 为准（上游 panel 实测：tier_7d/14d/28d_status =
+    available / claimed / locked），已领取的档位不再发请求；本地连签天数仅作兜底。
+    每次都必须用新的 client_token——复用旧键会被幂等去重吞掉本次领取。
+    """
     tiers = [("7d", 7, "入门"), ("14d", 14, "进阶"), ("28d", 28, "巅峰")]
+    status = {}
+    try:
+        stt = s.get(BASE + "/v2/activity/growth/streak", timeout=20, verify=False).json().get("data") or {}
+        rs = stt.get("redemption_status") or {}
+        status = {"7d": rs.get("tier_7d_status", ""), "14d": rs.get("tier_14d_status", ""),
+                  "28d": rs.get("tier_28d_status", "")}
+    except Exception:
+        pass
     for tier, need, label in tiers:
-        if streak_days is not None and streak_days < need:
+        tst = status.get(tier, "")
+        if tst == "claimed":
+            log("   🎁兑换%s档: 已兑换过" % label)
+            continue
+        if tst == "locked" or (streak_days is not None and streak_days < need):
             continue
         rr = s.post(BASE + "/v2/activity/growth/redeem",
                     json={"tier": tier, "client_token": "redeem-" + tier + "-" + str(uuid.uuid4())},
@@ -1105,8 +1158,10 @@ def t_redeem(s, uid, nick, log, streak_days=None):
         code = rr.get("code", -1)
         if code == 0:
             d = rr.get("data", {})
-            log("   🎁兑换%s档: +%s积分 +%s能量 +%s抽奖" % (label, d.get("credit_granted", 0),
-                                                        d.get("energy_granted", 0), d.get("chances_granted", 0)))
+            extra = " +%s补签卡" % d["cards_granted"] if d.get("cards_granted") else ""
+            log("   🎁兑换%s档: +%s积分 +%s能量 +%s抽奖%s" % (label, d.get("credit_granted", 0),
+                                                        d.get("energy_granted", 0),
+                                                        d.get("chances_granted", 0), extra))
         elif code == 409:
             log("   🎁兑换%s档: 已兑换过" % label)
         # 403=天数不足，静默
@@ -1440,31 +1495,46 @@ def _desktop_fingerprint_fallback(s, uid, nick, log, need_rich, need_skill):
         except Exception as e:
             log("   桌面对话(指纹): 失败 %s" % str(e)[:60])
     if need_skill:
-        # 技能：先用 API 安装，再发 skill_info 事件
+        # 技能：先用 API 安装，再发「真实对话 + skill_info」事件链
         try:
             src_ = s.get(BASE + "/console/as/marketplace/sources", timeout=20, verify=False).json()
             srcs = (src_.get("data") or {}).get("sources") or []
-            mid = srcs[0].get("id") if srcs else None
-            if mid:
+            mkid = srcs[0].get("id") if srcs else None
+            if mkid:
                 s.post(BASE + "/console/as/user/plugins/install",
-                       json={"plugin_name": SKILL_NAME, "marketplace_id": mid, "version": "latest"},
+                       json={"plugin_name": SKILL_NAME, "marketplace_id": mkid, "version": "latest"},
                        timeout=30, verify=False)
         except Exception:
             pass
         try:
-            # 获取技能 ID
+            # 技能 ID：市场列表命中则用真 id，否则用上游实测可用的技能 id
             skills_r = api_retry(s, "POST", SCHOOL_DOMAIN + "/v2/operation-platform/market/skill/list",
                                  body={"page": 1, "page_size": 10})
             skills = (skills_r.json().get("data") or {}).get("skills") or []
             skill_id = next((sk.get("id") for sk in skills if SKILL_NAME in str(sk.get("name", ""))), "")
+            skill_disp = SKILL_NAME
             if not skill_id:
-                skill_id = "skill-" + derive_id(uid, "skill")[:12]
-            rid = str(uuid.uuid4())
-            ev = {"eventCode": "skill_info", "skillId": skill_id, "skillName": SKILL_NAME,
-                  "timestamp": int(time.time() * 1000), "reportDelay": 0,
-                  "mode": "LOCAL", "source": "builtin", "userId": uid}
-            report_desktop_events(s, uid, nick, [ev])
-            log("   尝鲜热门技能(指纹): ✅ skill_info 已上报")
+                skill_id, skill_disp = SKILL_FALLBACK
+            # skill_info 判据必须 JOIN 真实会话（conversationId / requestId = 服务端 id）
+            conv_id = ""; smid = ""
+            try:
+                conv_id, _t, smid = webchat2(s, "skill", "你好，帮我写一份简短的日报，回答OK即可")
+            except Exception:
+                pass
+            if not (conv_id and smid):   # 对话不可用时保住旧口径
+                conv_id = "fp-sk-%s" % derive_id(uid, "sk-conv")
+                smid = "fp-sk-%s" % derive_id(uid, "sk-mid")
+            evs = desktop_chat_sequence(uid, nick, conv_id, smid, smid)
+            for ev in evs:
+                if ev.get("eventCode") == "chat_message_response":
+                    ev["finishReason"] = "tool_calls"   # 模型发起工具调用（技能加载）语义
+            evs.append({"eventCode": "skill_info", "id": skill_disp, "skillId": skill_id,
+                        "skillVersion": "1.0.0", "toolStatus": "success", "fileCount": 56,
+                        "source": "workbuddy-desktop", "conversationId": conv_id,
+                        "requestId": smid, "messageId": smid, "traceId": smid,
+                        "requestModelId": "fast-model", "requestModelName": "fast-model"})
+            report_desktop_events(s, uid, nick, evs)
+            log("   尝鲜热门技能(指纹): ✅ 真实对话 + skill_info 已上报")
             time.sleep(WRITE_GAP)
         except Exception as e:
             log("   尝鲜热门技能(指纹): 失败 %s" % str(e)[:60])
@@ -1603,8 +1673,18 @@ def t_workstation(s, uid, nick, log, tok):
     log("   工作台搭建师: %s %s/%s" % prog(s, "workstation_expert"))
 
 
+LIGHTHOUSE_EXPERT = {"id": "ex_2cvvUZQhDyeJ", "name": "腾讯轻量云专家", "version": "1.0.2"}
+
+
 def t_lighthouse(s, uid, nick, log):
-    """腾讯轻量云专家：拉取专家 → 伪造 expert_actual_use 上报（M15 同款）"""
+    """腾讯轻量云专家：真实对话 + 桌面链（has_expert）+ actual_use(LOCAL)，失败回落伪造链。
+
+    上游 panel 实测（2026-09-12 三账号点亮）：
+      · 专家 id 固定 ex_2cvvUZQhDyeJ（version 1.0.2），不是随便挑一个专家
+      · chat 链的 agent_task_created 需带 has_expert:true + expert_id/expert_name
+      · expert_actual_use 的 mode 为 LOCAL（不是 craft），type 留空、cost=0
+      · requestId / messageId 必须是真实会话的服务端 id（自造 uuid 不计数）
+    """
     st, cur, tgt = prog(s, "Expert_lighthouse")
     if st is None:
         log("   腾讯轻量云专家: 不在当前任务列表，跳过")
@@ -1612,27 +1692,79 @@ def t_lighthouse(s, uid, nick, log):
     if st in ("completed", "claimed"):
         log("   腾讯轻量云专家: %s %s/%s" % (st, cur, tgt))
         return
+    lh = dict(LIGHTHOUSE_EXPERT)
+    try:  # 市场列表命中则以服务端信息为准（version 等）
+        for e in get_normal_experts(20):
+            if (e.get("id") or "") == lh["id"] or "轻量" in (e.get("name") or ""):
+                lh["id"] = e.get("id") or lh["id"]
+                lh["name"] = e.get("name") or lh["name"]
+                lh["version"] = e.get("version") or lh["version"]
+                break
+    except Exception:
+        pass
+    prompt = "你好，请简单介绍一下你能帮我做什么，回答OK即可"
+    conv_id = ""; mid = ""
     try:
-        experts = get_normal_experts(20)
-        lh = next((e for e in experts if "轻量" in (e.get("name") or "") or "lighthouse" in (e.get("id") or "").lower()), None)
-        if not lh:
-            lh = {"id": "expert-lh-" + str(uuid.uuid4())[:8], "name": "轻量云专家", "profession": ""}
-        rid = str(uuid.uuid4()); cid = "conv-" + str(uuid.uuid4())
+        ge = [{"eventCode": "ExpertActualUse", "id": lh["id"],
+               "extra": {"name": lh["name"], "expertTitle": lh["name"], "expertType": "agent",
+                         "source": "builtin", "version": lh["version"], "cost": 0,
+                         "characterCount": len(prompt)},
+               "expertType": "agent"}]
+        meta = {"codebuddy.ai": {"growthEvent": json.dumps(ge, ensure_ascii=False),
+                                 "promptRequestId": str(uuid.uuid4()),
+                                 "clientSendTime": int(time.time() * 1000), "userId": uid,
+                                 "mode": "LOCAL", "model": "fast-model", "expertId": lh["id"],
+                                 "expert": {"id": lh["id"], "name": lh["name"], "prompt": prompt[:50]},
+                                 "tags": ["expert:" + lh["id"]]}}
+        conv_id, _txt, mid = webchat2(s, "lh", prompt, meta)
+    except Exception as e:
+        log("   腾讯轻量云专家: 对话异常 %s" % str(e)[:50])
+    if conv_id and mid:
+        summon = [
+            {"eventCode": "expert_summon_click", "id": lh["id"], "name": lh["name"],
+             "expertTitle": lh["name"], "type": "agent", "expertType": "agent",
+             "source": "builtin", "mode": "LOCAL"},
+            {"eventCode": "expert_summoned", "id": lh["id"], "name": lh["name"],
+             "expertTitle": lh["name"], "type": "agent", "expertType": "agent",
+             "source": "builtin", "version": lh["version"], "mode": "LOCAL"}]
+        chain = desktop_chat_sequence(uid, nick, conv_id, mid, mid)
+        for ev in chain:
+            if ev.get("eventCode") == "agent_task_created":
+                ev.update({"has_expert": True, "expert_id": lh["id"], "expert_name": lh["name"],
+                           "expert_industry_id": ""})
+        chain.append({"eventCode": "expert_actual_use", "id": lh["id"], "name": lh["name"],
+                      "expertTitle": lh["name"], "type": "", "expertType": "agent",
+                      "source": "builtin", "version": lh["version"], "cost": 0,
+                      "characterCount": len(prompt), "mode": "LOCAL",
+                      "conversationId": conv_id, "requestId": mid, "messageId": mid,
+                      "requestModelId": "fast-model", "requestModelName": "fast-model"})
+        try:
+            report_desktop_events(s, uid, nick, summon + chain)
+        except Exception as e:
+            log("   腾讯轻量云专家: 桌面链上报失败 %s" % str(e)[:50])
+        time.sleep(4)
+        if prog(s, "Expert_lighthouse")[0] in ("completed", "claimed"):
+            st, cur, tgt = prog(s, "Expert_lighthouse")
+            log("   腾讯轻量云专家: %s %s/%s" % (st, cur, tgt))
+            return
+    # 回落：web 域伪造链（真实对话不可用，或桌面链未点亮时）
+    try:
+        rid = mid or str(uuid.uuid4()); cid = conv_id or ("conv-" + str(uuid.uuid4()))
         report(s, uid, nick, [{
             "eventCode": "expert_summoned", "id": lh["id"], "name": lh["name"],
-            "type": "agent", "expertTitle": lh.get("profession", ""), "expertType": "agent",
+            "type": "agent", "expertTitle": lh["name"], "expertType": "agent",
             "source": "builtin", "timestamp": int(time.time() * 1000)},
             {"eventCode": "expert_actual_use", "id": lh["id"], "name": lh["name"],
-             "expertTitle": lh.get("profession", ""), "type": "agent", "expertType": "agent",
-             "source": "builtin", "version": "", "cost": 0, "characterCount": 12,
+             "expertTitle": lh["name"], "type": "agent", "expertType": "agent",
+             "source": "builtin", "version": lh["version"], "cost": 0, "characterCount": len(prompt),
              "conversationId": cid, "requestId": rid, "messageId": rid,
-             "requestModelId": "deepseek-v4-flash", "requestModelName": "DeepSeek V4 Flash",
+             "requestModelId": "fast-model", "requestModelName": "fast-model",
              "userId": uid}])
         time.sleep(3)
-        st, cur, tgt = prog(s, "Expert_lighthouse")
-        log("   腾讯轻量云专家: %s %s/%s" % (st, cur, tgt))
     except Exception as e:
         log("   腾讯轻量云专家: 失败 %s" % str(e)[:60])
+    st, cur, tgt = prog(s, "Expert_lighthouse")
+    log("   腾讯轻量云专家: %s %s/%s" % (st, cur, tgt))
 
 
 MP_HEADER = {"X-Client-Platform": "miniprogram",
