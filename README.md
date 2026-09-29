@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 38 项自动化任务 · 🏫 开学季活动 · 📱 小程序任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 三渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 38 项自动化 · 📱 小程序链式任务 · 🏫 开学季（活动期自适应） · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 三渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -61,6 +61,8 @@ pip3 install requests
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人 webhook（或仅 key） |
+| `WORKBUDDY_TASKS` | ⬜ | 可选，白名单子任务（如 `checkin,travel`） |
+| `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，黑名单子任务（如 `lottery,redeem`） |
 
 > 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
 
@@ -155,6 +157,7 @@ python workbuddy_login.py --verify           # 登录后额外验证 RT 是否�
    ```
    C:/Users/你的用户名/AppData/Local/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info
    ```
+   > ℹ️ 新版桌面端文件名是 `workbuddy-desktop-ai.info`（旧版为 `workbuddy-desktop.info`），两个都看一下即可。
 3. 在文件里搜索 `accessToken` 和 `refreshToken`，各自后面跟一串 **`eyJ` 开头**的长字符串，那就是 **AT** 和 **RT**
 4. 按格式拼一行，多账号写多行：
    ```
@@ -177,6 +180,8 @@ python workbuddy_daily.py --no-school    # 跳过开学季活动
 python workbuddy_daily.py --school-only  # 只跑开学季活动（不做成长中心任务）
 python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，最低 1.0）
+python workbuddy_daily.py --tasks checkin,travel     # 只跑白名单子任务
+python workbuddy_daily.py --skip-tasks lottery,redeem # 跳过指定子任务
 ```
 
 ---
@@ -189,6 +194,32 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，内置 PushPlus 推送，运行结果推到微信 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx`（自建服务器换域名即可） |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人。填完整 webhook URL，或只填 key（自动补全域名） |
+| `WORKBUDDY_TASKS` | ⬜ | 可选，**白名单**：只跑列出的子任务（逗号/空格/顿号分隔，大小写不敏感） |
+| `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，**黑名单**：跳过列出的子任务（与白名单可叠加，黑名单优先） |
+
+> 🎛️ **子任务开关怎么用？** 任务完成后领到的积分有**一个月有效期**，一次全领完容易放过期。
+>
+> ```bash
+> # 只保留每日型任务（签到 + 旅行），其余成长任务留到以后想做时再放开
+> WORKBUDDY_TASKS=checkin,travel
+>
+> # 反过来：全都做，只跳过大转盘与连登兑换
+> WORKBUDDY_SKIP_TASKS=lottery,redeem
+> ```
+>
+> 代号：成长任务直接用 `task_code`（如 `chat_5`、`expert_5`、`black_cat`、`Sequential_Tasks_5`）；玩法/流程用别名 `checkin` `travel` `lottery` `redeem` `gift` `makeup` `badges` `blindbox` `buddy_info` `desktop` `school`。
+>
+> 被跳过的任务**不会执行、也不会被领奖**（在列表里保持未完成）；`first_buddy` 与 accept/领奖流程不受过滤影响。
+
+> ⚠️ **日志出现 `token format error`（或 `12153`）怎么办？** 说明服务端认为你给的 RT 不是它签发的合法格式。脚本会先做一次**本地凭据体检**（不联网）并打印结论：
+>
+> | 体检输出 | 含义与处理 |
+> | :--- | :--- |
+> | `RT 的 typ=Bearer（应为 Offline）` | **AT/RT 写反了**——顺序必须是 `手机号:AT:RT` |
+> | `RT 不是 eyJ 开头的三段式 JWT` | 被截断，或带了引号/空格/换行/中文冒号 |
+> | `签发域是 …，不是 CN 站` | 粘成了国际版或其他应用的 token（CN 站合法签发域是 `www.codebuddy.cn/auth/realms/copilot`） |
+>
+> 另外两种体检看不出来的情况：③ 该 RT 已被其他工具（面板/网关/另一台机器）轮换过；④ 粘的是 `CodeBuddyExtension\Data\Public\auth` 里**别的应用**的 token。最稳的做法：`python workbuddy_login.py` 重新登录拿最新一行。
 
 ---
 
@@ -202,13 +233,13 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 
 | # | 任务 | 说明 |
 | :-: | :--- | :--- |
-| 1 | 设计创意模式 | 造画布事件上报 |
-| 2 | 探索优秀灵感 | playbook 事件上报 |
+| 1 | 设计创意模式 | 真实对话 + 桌面链（`wbx_design_canvas_task_create` / `_open`） |
+| 2 | 探索优秀灵感 | `playbook_cta_click` + `playbook_prompt_send`（JOIN 真实会话） |
 | 3 | 桌面端对话 | Windows 真实桌面 / 非 Windows 指纹上报（**无需真实桌面端**） |
 | 4 | 尝鲜热门技能 | Windows 真实桌面 / 非 Windows 指纹上报（**无需真实桌面端**） |
 | 5 | 体验资料库 | web 域点击事件 |
 | 6 | 腾讯轻量云专家 | 真实对话 + 桌面链（`has_expert`）+ `actual_use(mode:LOCAL)` |
-| 7 | 和平精英主题 | 主题切换 API + 遥测 |
+| 7 | 和平精英主题 | 主题目录取真 `resource_key` + `appearance_skin_apply` 遥测 |
 | 8 | 发现应用 | Buddy 五连事件链 |
 | 9 | 企鹅教师助手 | Buddy 五连事件链 |
 | 10 | GLM-5.2模型对话 | 真实 AI 对话 |
@@ -217,7 +248,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 13 | 召唤3次专家团 | 真实团队对话 + 遥测 |
 | 14 | 召唤5次专家 | expert 事件上报 |
 | 15 | 使用5个模板 | 服务端真实场景 id（`/console/as/support/scenes`）+ 事件组上报 |
-| 16 | 设置自动化任务 | automation 事件上报 |
+| 16 | 设置自动化任务 | 真实 rrule 定时对象形状 + automation 事件上报 |
 | 17 | 领取Buddy | 领养链路（+300c+8e） |
 | 18 | ~~公益专家~~ | ❌ **需真实捐款，脚本不做** |
 | — | ~~工作台搭建师~~ | ⚠️ **服务端已下线**（脚本仍兼容，出现时会自动处理） |
@@ -248,7 +279,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 1 | `Sequential_Tasks_1` 完成 1 次对话 | +100 积分 +5 能量 | mini `chat_request_send` |
 | 2 | `Sequential_Tasks_2` 选中专家并完成对话 | +200 积分 +5 能量 | mp 指纹 `expert_actual_use` |
 | 3 | `Sequential_Tasks_3` 完成 5 次对话 | +300 积分 +5 能量 | 逐条累加，自动补差额 |
-| 4 | `Sequential_Tasks_4` 创建 1 个定时任务 | +100 积分 +5 能量 | 桌面口径 `automated_task_create_suc` |
+| 4 | `Sequential_Tasks_4` 创建 1 个定时任务 | +100 积分 +5 能量 | mp 指纹 `automated_task_create_suc`（`mode=CLOUD`，无 rrule 对象） |
 | 5 | `Sequential_Tasks_5` 使用 1 次 GLM5.2 | +100 积分 +5 能量 | mini chat + 模型字段 |
 | 6 | `Sequential_Tasks_6` 完成 10 次对话 | — | 同 Tasks_1/3 形状，target=10 |
 | 7 | `Sequential_Tasks_7` 体验灵感功能 | — | mp 指纹 `playbook_cta_click` + `playbook_prompt_send` |
@@ -256,7 +287,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 
 > 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环（accept 返回 `task locked until <日期>`），脚本每次运行自动检测并推进，无需人工干预；日志会直接给出解锁日期与「今日未解锁」提示，不会被当成失败。
 >
-> ✅ 已验证到账：Tasks_1~4 + 校园日 = **+800 积分 +20 能量**；**Tasks_5 已 claimed**（+100 积分 +5 能量），Tasks_6 已下发并锁定至次日零点、Tasks_7 待下发，均由链式机制自动推进
+> ✅ 已到账：**Tasks_1~7 全部 claimed**（链式机制逐日自动推进），校园日奖励也已在活动期内入账
 
 > 💡 这三项需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
 > 💡 判据上报走小程序指纹头族（`X-Client-Platform: mp-weixin` + `X-Client-Product: workbuddy-mp`），对齐官方 appservice 埋点。
@@ -293,6 +324,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 - **♻️ 幂等补缺**：所有任务先查进度再执行，已完成 / 已领取直接跳过，重复运行零副作用。
 - **⏰ 智能续期**：距上次刷新 > 10 天或 AT 7 天内过期才刷新，避免无谓轮换。
 - **🔄 API 重试**：网络错误 / 5xx 自动指数退避重试 3 次；`--gap` 可调写动作间隔防频控。
+- **🎛️ 子任务开关**：`WORKBUDDY_TASKS`（白名单）/ `WORKBUDDY_SKIP_TASKS`（黑名单）可自由裁剪要执行的子任务（含玩法），被跳过的任务不会被完成也不会被领奖——适合把积分分摊到后面几个月领。
 - **🔗 稳定设备指纹**：每账号 md5 派生固定 machineId/sessionId，桌面事件指纹与真实客户端对齐。
 - **📡 多域上报**：桌面域 + Web 域 + 小程序域三通道事件上报，完整覆盖所有任务类型。
 - **📋 进度感知**：只上报缺口数量的事件，不重复提交已完成的进度。
@@ -300,6 +332,9 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 - **🧩 前置依赖自动补救**：accept 逐项 `message` 里解析 `prerequisite not met: <任务>`，先补跑前置任务（如首只 Buddy 领养）再重试登记，新账号不再卡在「17 项未落账」。
 - **🎯 真实会话 id**：专家/技能类任务的 `requestId` / `messageId` 取自真实对话的服务端消息 id（`cmb-` 形态），并对齐 `has_expert` / `mode: LOCAL` 口径——上游 panel 三账号实测点亮 `Expert_lighthouse`。
 - **🎁 领奖口径对齐**：连登奖励按服务端 `redemption_status` 判定档位（已领不重发请求），实物奖自动提示填写收货地址。
+- **📈 签到读数 + 到期预警**：签到后读签到活动状态，报告给出**连签天数 / 累计积分 / 距下一次连签奖励的天数**；距活动 `end_time` ≤7 天或活动已关闭时给出 ⚠️ 提示（避免“活动结束才发现收入断档”）。
+- **🧭 生态口径对齐**：画布 / 灵感走真实对话 + 桌面链，主题目录动态取真 `resource_key`，自动化任务用真实 rrule 对象；抽奖（`lottery/summary`）与兑换（`redeem/summary`）均带备用接口口径。
+- **🛡️ 单账号隔离 + 凭据体检**：续期前先本地体检 RT/AT（`typ=Offline`、签发域 `codebuddy.cn`、三段式），把 `token format error` 翻译成「粘反了 / 粘错文件 / 被截断」；任一账号凭据失效或中途异常只跳过该账号，**不会中断整轮运行**。
 - **🏫 开学季活动**：自动执行开学季限时任务（分享 / 对话 / 专家）+ 幸运大转盘抽奖。
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
 - **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
@@ -354,12 +389,12 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
    ✅ 全部完成！
 
 📊 ══ 总计 ══
-👥 共2个账号，任务完成 34/36 项
+👥 共2个账号，任务完成 36/38 项
 
    · 桌面端对话（1个账号待完成）
    · 尝鲜热门技能（1个账号待完成）
 
-🕐 2026-09-12 07:05
+🕐 2026-09-27 07:05
 ```
 
 ---
