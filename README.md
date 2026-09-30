@@ -63,6 +63,7 @@ pip3 install requests
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人 webhook（或仅 key） |
 | `WORKBUDDY_TASKS` | ⬜ | 可选，白名单子任务（如 `checkin,travel`） |
 | `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，黑名单子任务（如 `lottery,redeem`） |
+| `WORKBUDDY_MP_GAP` | ⬜ | 可选，mp 对话事件间隔秒数（默认 `45`，调小可提速但可能被上游反作弊回滚） |
 
 > 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
 
@@ -182,6 +183,7 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，最低 1.0）
 python workbuddy_daily.py --tasks checkin,travel     # 只跑白名单子任务
 python workbuddy_daily.py --skip-tasks lottery,redeem # 跳过指定子任务
+python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，上游要求真人节奏）
 ```
 
 ---
@@ -196,6 +198,7 @@ python workbuddy_daily.py --skip-tasks lottery,redeem # 跳过指定子任务
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人。填完整 webhook URL，或只填 key（自动补全域名） |
 | `WORKBUDDY_TASKS` | ⬜ | 可选，**白名单**：只跑列出的子任务（逗号/空格/顿号分隔，大小写不敏感） |
 | `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，**黑名单**：跳过列出的子任务（与白名单可叠加，黑名单优先） |
+| `WORKBUDDY_MP_GAP` | ⬜ | 可选，mp 对话事件之间的间隔秒数（默认 `45`） |
 
 > 🎛️ **子任务开关怎么用？** 任务完成后领到的积分有**一个月有效期**，一次全领完容易放过期。
 >
@@ -287,6 +290,8 @@ python workbuddy_daily.py --skip-tasks lottery,redeem # 跳过指定子任务
 
 > 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环（accept 返回 `task locked until <日期>`），脚本每次运行自动检测并推进，无需人工干预；日志会直接给出解锁日期与「今日未解锁」提示，不会被当成失败。
 >
+> ⏱️ **真人节奏**：`chat_request_send` 类对话判据有**反作弊校验**——数秒级连发会先计入进度、随后被整体回滚（claim 返回 400 `task not completed`）。所以脚本对 Tasks_1/3/5/6、校园日按 **45s±10s 逐条上报**（上游实测 45s 间隔全存活），可用 `--mp-gap` / `WORKBUDDY_MP_GAP` 调整；副作用是「一次要补很多条」时整轮会变慢（工作流超时已放宽到 45 分钟）。
+>
 > ✅ 已到账：**Tasks_1~7 全部 claimed**（链式机制逐日自动推进），校园日奖励也已在活动期内入账
 
 > 💡 这三项需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
@@ -339,6 +344,8 @@ python workbuddy_daily.py --skip-tasks lottery,redeem # 跳过指定子任务
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
 - **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
 - **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族，与官方小程序埋点一致。
+- **⏱️ mp 真人节奏 + accept 后回读**：对话判据逐条 45s±10s（对齐上游反作弊实测，避免「先计数后被整体回滚」）；accept 后重读真实 `target`，杜绝「少报 → 误判达标 → claim 400」。
+- **🔁 瞬时错误有界重试**：每日签到 / 余额 / 用量对网络抖动与 5xx 做 2s/4s 退避重试（最多 2 次），业务错误（如「今天已签到」）不重试。
 - **📢 三渠道推送**：PushPlus（微信）+ Bark（iOS）+ 企业微信群机器人，可同时配置互不影响。
   企业微信只需一个 webhook（群设置 → 群机器人 → 添加 → 复制 URL）。
 
