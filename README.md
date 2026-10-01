@@ -257,6 +257,8 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 | — | ~~工作台搭建师~~ | ⚠️ **服务端已下线**（脚本仍兼容，出现时会自动处理） |
 
 > 🔗 **前置条件**：`first_buddy`（领取Buddy）是其余 17 项任务的登记前置——服务端对**没有 Buddy 实例**的账号会拒绝这些任务的 accept（`prerequisite not met: first_buddy (no buddy instance)`）。脚本已把领养链路提到云端任务最前面，并在 accept 报前置错误时**自动补跑前置再重试登记**。
+>
+> ⏳ **任务有效期**：部分任务由服务端下发 `valid_start` / `valid_end`（例如 `Buddy_App_QQ` 至 **2026-10-10**、`Hp_Appearance` 至 2026-11-02、`Expert_lighthouse` 至 2026-11-13），过期后不再能领取；脚本每次运行会顺带读取任务行，遇到 `locked=true`（未到上线时间）会直接跳过并给出解锁日期。
 
 ### 🏫 开学季活动（5 项 · 4 项全自动 + 幸运大转盘）
 
@@ -284,11 +286,11 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 | 3 | `Sequential_Tasks_3` 完成 5 次对话 | +300 积分 +5 能量 | 逐条累加，自动补差额 |
 | 4 | `Sequential_Tasks_4` 创建 1 个定时任务 | +100 积分 +5 能量 | mp 指纹 `automated_task_create_suc`（`mode=CLOUD`，无 rrule 对象） |
 | 5 | `Sequential_Tasks_5` 使用 1 次 GLM5.2 | +100 积分 +5 能量 | mini chat + 模型字段 |
-| 6 | `Sequential_Tasks_6` 完成 10 次对话 | — | 同 Tasks_1/3 形状，target=10 |
-| 7 | `Sequential_Tasks_7` 体验灵感功能 | — | mp 指纹 `playbook_cta_click` + `playbook_prompt_send` |
+| 6 | `Sequential_Tasks_6` 完成 10 次对话 | +100 积分 +5 能量 | 同 Tasks_1/3 形状，target=10 |
+| 7 | `Sequential_Tasks_7` 体验灵感功能 | **+500 积分** +5 能量 | mp 指纹 `playbook_cta_click` + `playbook_prompt_send` |
 | 8 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 | 需 `activityId`（开学季已结束，任务已从列表撤下，奖励此前已到账） |
 
-> 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环（accept 返回 `task locked until <日期>`），脚本每次运行自动检测并推进，无需人工干预；日志会直接给出解锁日期与「今日未解锁」提示，不会被当成失败。
+> 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环。脚本支持两种判据：任务行 `locked=true`（未到上线时间）→ 直接跳过并打印解锁日；错过时才靠 accept 返回的 `task locked until <日期>` 兜底。两种情况都不会被当成失败。
 >
 > ⏱️ **真人节奏**：`chat_request_send` 类对话判据有**反作弊校验**——数秒级连发会先计入进度、随后被整体回滚（claim 返回 400 `task not completed`）。所以脚本对 Tasks_1/3/5/6、校园日按 **45s±10s 逐条上报**（上游实测 45s 间隔全存活），可用 `--mp-gap` / `WORKBUDDY_MP_GAP` 调整；副作用是「一次要补很多条」时整轮会变慢（工作流超时已放宽到 45 分钟）。
 >
@@ -343,7 +345,7 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 - **🏫 开学季活动**：自动执行开学季限时任务（分享 / 对话 / 专家）+ 幸运大转盘抽奖。
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
 - **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
-- **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族，与官方小程序埋点一致。
+- **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族；指纹按**官方小程序源码**口径（`ideVersion/extVersion=2.2.8`、`android 14 / arm64`、`source=mini_program`），对话事件的 `conversationId` / `requestId` / `traceId` 同值传递。
 - **⏱️ mp 真人节奏 + accept 后回读**：对话判据逐条 45s±10s（对齐上游反作弊实测，避免「先计数后被整体回滚」）；accept 后重读真实 `target`，杜绝「少报 → 误判达标 → claim 400」。
 - **🔁 瞬时错误有界重试**：每日签到 / 余额 / 用量对网络抖动与 5xx 做 2s/4s 退避重试（最多 2 次），业务错误（如「今天已签到」）不重试。
 - **📢 三渠道推送**：PushPlus（微信）+ Bark（iOS）+ 企业微信群机器人，可同时配置互不影响。

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v2.7
+🌱 WorkBuddy Daily - 全能签到脚本 v2.8
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -122,6 +122,9 @@
    · mp 真人节奏：Sequential 对话判据逐条 45s±10s 上报（上游有反作弊：连发会先计数、
      后被整体回滚，claim 报 400）；--mp-gap / WORKBUDDY_MP_GAP 可调
    · accept 后回读：mp 任务接受后重读真实 target，避免“少报→误判达标→claim 400”
+   · mp 指纹：按官方源码口径（ideVersion/extVersion=2.2.8、android 14/arm64、source=mini_program）
+   · locked 任务：任务行 locked=true（未到上线时间）直接跳过并给出解锁日，不空跑不误判
+   · mp 对话 id：conversationId / requestId / traceId 同值传递（源码同值）
    · 瞬时错误重试：每日签到/余额/用量对网络与 5xx 做 2s/4s 有界重试，业务错误不重试
    · 凭据体检：续期前本地看 RT/AT 结构与签发域（typ=Offline / codebuddy.cn realm），
      把 12153 token format error 提前翻译成“粘反了 / 粘错了文件 / 截断了”
@@ -2100,27 +2103,33 @@ def mp_machine_id(uid):
 
 
 def mp_base(uid, nick):
-    """小程序埋点公共指纹（对齐 appservice wQ()+Ao()）。"""
+    """小程序埋点公共指纹（对齐官方源码 module 22015 的 wQ()+Ao()）。
+
+    源码常量（module 25439）：ideVersion/extVersion = 小程序包版本 2.2.8（恒定值，不是
+    SaaS 状态）；os/osVersion/arch 取 getDeviceInfo() 运行值——这里固定成一份真实安卓机
+    指纹（android 14 / arm64），与 mp_mini_expert_event、上游 task_runner 同口径。
+    """
     now = int(time.time() * 1000)
-    return {"timestamp": now, "ideType": "WorkBuddy_MP", "ideVersion": "2.4.0",
-            "extName": "workbuddy-mp", "extVersion": "2.4.0", "product": "SaaS",
+    return {"timestamp": now, "ideType": "WorkBuddy_MP", "ideVersion": "2.2.8",
+            "extName": "workbuddy-mp", "extVersion": "2.2.8", "product": "SaaS",
             "ideName": "wx_app_cloud", "platform": "mini_program",
             "source": "mini_program",   # 官方源码口径：mp 身份 = wx_app_cloud + WorkBuddy_MP + source
-            "os": "windows", "osVersion": "11", "arch": "x64",
+            "os": "android", "osVersion": "14", "arch": "arm64",
             "machineId": mp_machine_id(uid), "timezone": "Asia/Shanghai",
             "userId": uid, "userNickname": nick}
 
 
 def mp_chat_event(uid, nick, conv_id, activity_id=None):
     """小程序 chat_request_send 事件（chat_3_times / school_season / Sequential_Tasks_1 判据）。"""
-    rid = "wb2api-" + str(uuid.uuid4())
-    ev = {"eventCode": "chat_request_send", "inputLength": 14, "isPlan": False,
+    # 官方源码（growth 模块 86692）：conversationId / requestId / traceId 同值传递
+    rid = conv_id
+    ev = {"eventCode": "chat_request_send", "mode": "chat", "inputLength": 12, "isPlan": False,
           "isAutoExecuteTerminal": False, "isAutoModify": False, "codebaseEnable": False,
           "maxToken": 0, "maxSteps": 500, "temperature": 0, "maxRetries": 0,
           "mentionContexts": [], "knowledgeId": [], "knowledgeName": [],
           "codebaseId": "", "mentionContextCount": 0, "command": "",
           "recommendId": "", "skillId": "", "skillCount": 0, "totalCount": 0,
-          "traceId": rid, "rootRequestId": rid,
+          "requestId": rid, "traceId": rid, "rootRequestId": rid,
           "parentConversationId": conv_id, "conversationId": conv_id,
           "messageId": "msg-" + rid[-8:], "agentName": "mp", "agentType": "main",
           "codebuddy.session_id": conv_id,
@@ -2282,6 +2291,22 @@ def _mp_claim(s, code, log):
         return False
 
 
+def _mp_task_row(s, code):
+    """mp 口径任务原始行（含 locked / valid_start / reward_* 等字段）；未下发返回 None。
+
+    服务端每个任务行都带 locked；locked=true 表示未到上线时间（accept 会报
+    "task locked until <日期>"），此时上报与领奖都无意义且会被判无效。
+    """
+    try:
+        r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False, headers=MP_HEADER)
+        for t in r.json().get("data", {}).get("tasks", []):
+            if t.get("task_code") == code:
+                return t
+    except Exception:
+        pass
+    return None
+
+
 def _mp_do_task(s, uid, nick, code, log, events_fn, label, target=1, pace=False):
     """小程序任务通用流程：mp 查询 → accept → 判据上报 → 回读 → claim。
 
@@ -2292,10 +2317,16 @@ def _mp_do_task(s, uid, nick, code, log, events_fn, label, target=1, pace=False)
             claim 成功，故每条前等 MP_CHAT_GAP(45s)+0~10s 抖动，首条也等（上一轮被
             回滚的残留进度，立即重报同样无效）；--mp-gap / WORKBUDDY_MP_GAP 可调。
     """
-    st, cur, tgt = _mp_prog(s, code)
-    if st is None:
+    row = _mp_task_row(s, code)
+    if row is None:
         log("   %s: mp 口径未下发该任务，跳过" % label)
         return
+    if row.get("locked"):
+        log("   %s: 未到上线时间（解锁 %s），跳过" % (label, str(row.get("valid_start") or "见任务页")[:10]))
+        return
+    st = row.get("accept_status", "")
+    _pr = row.get("progress") or {}
+    cur, tgt = _pr.get("current"), _pr.get("target")
     if st in ("completed", "claimed"):
         if st == "completed":
             _mp_claim(s, code, log)
@@ -2393,55 +2424,33 @@ def t_sequential_tasks_4(s, uid, nick, log):
     照抄会失去 mp 关联），走小程序上报通道。未点亮时回落桌面域事件（旧口径）。
     """
     def _evs(i):
+        # 官方源码形状（dynamic-common appservice TaskFormSheet 创建成功）：不带
+        # schedule/rrule 对象，也没有 modelId/connector/pushTo* 等桌面字段；
+        # scheduleType 取小程序表单频率枚举（daily/interval/once）
         return [{"eventCode": "automated_task_create_suc", "mode": "CLOUD",
-                 "name": "wb2mp 定时任务", "source": "manually",
-                 "modelId": "fast-model", "modelIsThinking": False,
-                 "connectorCount": 0, "skills": "", "skillCount": 0,
-                 "scheduleType": "once"}]
-    st, cur, tgt = _mp_prog(s, "Sequential_Tasks_4")
-    if st is None:
-        log("   小程序定时任务: mp 口径未下发该任务，跳过")
+                 "name": "每日读书提醒", "source": "manually",
+                 "skills": "", "skillCount": 0,
+                 "scheduleType": "daily"}]
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_4", log, _evs, "小程序定时任务", target=1)
+    if _mp_prog(s, "Sequential_Tasks_4")[0] in ("completed", "claimed"):
         return
-    if st in ("completed", "claimed"):
-        if st == "completed":
-            _mp_claim(s, "Sequential_Tasks_4", log)
-        else:
-            log("   小程序定时任务: 已领取，跳过")
-        return
-    if st == "not_accepted":
-        ok, a_status, a_msg = _mp_accept_res(s, "Sequential_Tasks_4")
-        if not ok:
-            log("      ✗ accept Sequential_Tasks_4: %s %s" % (a_status or "无返回", a_msg[:50]))
-            if not _mp_locked_hint(log, "小程序定时任务", a_msg):
-                log("   小程序定时任务: accept 失败，跳过")
-            return
-        time.sleep(WRITE_GAP)
-    mp_report(s, uid, nick, _evs(0))
-    log("   小程序定时任务: mp 指纹 automation 事件已上报")
-    time.sleep(2.5)
-    st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_4")
+    # 回落：桌面域 automation 事件（旧口径，实测同样能点亮）
+    try:
+        report_desktop_events(s, uid, nick, [{
+            "eventCode": "automated_task_create_suc", "name": "wb2api 定时任务",
+            "source": "manually", "modelId": "fast-model", "modelIsThinking": True,
+            "connectorCount": 0, "skills": "", "skillCount": 0,
+            "scheduleType": "once", "mode": "LOCAL"}])
+        time.sleep(2.5)
+        st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_4")
+    except Exception:
+        pass
     if st2 in ("completed", "claimed"):
-        log("   小程序定时任务: ✅ 已完成 %s/%s" % (cur2, tgt2))
+        log("   小程序定时任务: ✅ 已完成（桌面域回落） %s/%s" % (cur2, tgt2))
         if st2 == "completed":
             _mp_claim(s, "Sequential_Tasks_4", log)
     else:
-        # 回落：桌面域 automation 事件（旧口径，实测同样能点亮）
-        try:
-            report_desktop_events(s, uid, nick, [{
-                "eventCode": "automated_task_create_suc", "name": "wb2api 定时任务",
-                "source": "manually", "modelId": "fast-model", "modelIsThinking": True,
-                "connectorCount": 0, "skills": "", "skillCount": 0,
-                "scheduleType": "once", "mode": "LOCAL"}])
-            time.sleep(2.5)
-            st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_4")
-        except Exception:
-            pass
-        if st2 in ("completed", "claimed"):
-            log("   小程序定时任务: ✅ 已完成（桌面域回落） %s/%s" % (cur2, tgt2))
-            if st2 == "completed":
-                _mp_claim(s, "Sequential_Tasks_4", log)
-        else:
-            log("   小程序定时任务: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
+        log("   小程序定时任务: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
 
 
 def t_sequential_tasks_5(s, uid, nick, log):
