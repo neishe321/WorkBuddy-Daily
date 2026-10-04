@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 38 项自动化 · 📱 小程序链式任务 · 🏫 开学季（活动期自适应） · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 三渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 38 项自动化 · 📱 小程序链式任务 · 🏫 开学季（活动期自适应） · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -12,6 +12,7 @@
 <img src="https://img.shields.io/badge/Deps-requests%20only-A78BFA?style=for-the-badge&logo=pypi&logoColor=white" />
 <img src="https://img.shields.io/badge/Self--contained-1%20file-FFC75F?style=for-the-badge&logo=files&logoColor=white" />
 <img src="https://img.shields.io/badge/License-MIT-F472B6?style=for-the-badge" />
+<a href="https://github.com/L0NE-6/WorkBuddy-Daily/releases"><img src="https://img.shields.io/badge/%E2%AC%87%20Download-Releases-2ea44f?style=for-the-badge&logo=github" /></a>
 
 </div>
 
@@ -26,6 +27,8 @@
 > 📦 **单文件自包含**：无需任何配套模块（专家市场数据、推送通知全部内置），青龙上传一个 `workbuddy_daily.py` 即可运行。
 >
 > ☁️ **云端部署**：除了青龙，也支持直接跑在 **GitHub Actions** 上，零服务器、定时自动执行。
+>
+> ⬇️ **不想用 git？** 直接到 **[Releases](https://github.com/L0NE-6/WorkBuddy-Daily/releases)** 下载：完整包 zip（主脚本 + 登录工具 + README + Actions 工作流）、单文件 `workbuddy_daily.py`、登录工具 `workbuddy_login.py`——每个包都附 SHA256 校验值。
 
 ---
 
@@ -37,10 +40,16 @@
 | **2️⃣ 设置变量** | `WORKBUDDY_REFRESH_TOKEN` = 每行一个 `手机号:AT:RT`（多账号换行分隔） |
 | **3️⃣ 定时任务** | 日常 `0 7,12 * * *` · 夜猫子窗口 `30 23 * * *`（**青龙用本地时间**） |
 
+> 🐧 **命令必须用青龙运行器（高频坑）**：定时任务命令填 **`task workbuddy_daily.py`**（面板「定时任务 → 新建任务」时从脚本列表里选），**不要填裸 `python workbuddy_daily.py`** —— 裸 `python` 调用不会注入面板环境变量，脚本会直接报「请设置环境变量 WORKBUDDY_REFRESH_TOKEN」（issue #16 实证：变量明明存在、测试脚本也能读到，就是它）。
+>
+> ⬇️ 脚本可以从 **[Releases](https://github.com/L0NE-6/WorkBuddy-Daily/releases)** 下载（青龙只需上传里面的 `workbuddy_daily.py`）。
+
 > 🌙 **为什么需要单独的夜猫定时？** 夜猫子任务只在 **23:00–08:00** 期间计入进度，且要求**真实对话**（不能指纹伪造）。
 > 日常的 7 点、12 点都不在窗口内，所以必须有 `30 23 * * *` 这个专门的窗口定时，否则夜猫子永远跑不了。
 >
 > 📌 官方规则是「**每天 1 次 × 累计 3 天**」，脚本有响应即停，不会一晚空跑多次。
+>
+> 📢 **通知**：脚本会自动读青龙面板的默认通知配置（`QL_DIR/config/auth.json` 的 token）并直接调面板通知接口——面板里配了啥就用啥，无需再填 webhook；也支持 `DINGTALK_WEBHOOK`（钉钉）等五种渠道。
 
 ```bash
 # 依赖（仅一个）
@@ -61,6 +70,8 @@ pip3 install requests
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人 webhook（或仅 key） |
+| `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人 webhook（安全设置：自定义关键词或加签） |
+| `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（机器人选「加签」时必填） |
 | `WORKBUDDY_TASKS` | ⬜ | 可选，白名单子任务（如 `checkin,travel`） |
 | `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，黑名单子任务（如 `lottery,redeem`） |
 | `WORKBUDDY_MP_GAP` | ⬜ | 可选，mp 对话事件间隔秒数（默认 `45`，调小可提速但可能被上游反作弊回滚） |
@@ -151,7 +162,17 @@ python workbuddy_login.py --verify           # 登录后额外验证 RT 是否�
 ---
 ## 🔑 如何获取变量值（首次必看）
 
-> 从桌面端认证文件中取 `AT` 和 `RT`，拼成 `手机号:AT:RT`。
+> 目标：拿到一行 `手机号:AT:RT`，其中 AT / RT 都是 **`eyJ` 开头的明文 JWT**。
+
+### ✅ 方式 A（推荐）：短信验证码登录工具
+
+```bash
+python workbuddy_login.py
+```
+
+走官方插件登录接口，由**服务端直接下发明文** `accessToken` / `refreshToken`，跑完直接输出一行可粘贴的 `手机号:AT:RT`。不受下面「加密信封」影响 👇
+
+### 🖥️ 方式 B：从桌面端认证文件里取（旧版客户端）
 
 1. **安装并登录** WorkBuddy 桌面端
 2. 用记事本打开下面这个文件（`AppData` 是隐藏文件夹，地址栏直接粘贴路径）：
@@ -164,6 +185,16 @@ python workbuddy_login.py --verify           # 登录后额外验证 RT 是否�
    ```
    1XXXXXXXXXX:eyJhbGciOiJSUzI1NiIs...很长...:eyJhbGciOiJIUzUxMiIs...也很长...
    ```
+
+> ⛔ **WorkBuddy 5.6.2+ 的重要变化**：客户端默认强制开启 **AtRestEncryption**，认证文件里的 `accessToken` / `refreshToken` **不再是明文**，而是 AES-256-GCM 加密信封：
+> ```json
+> { "auth": { "accessToken": { "$wbEncrypted": 1, "envelope": "……base64……" } } }
+> ```
+> 解密密钥**不落盘**（只驻留客户端进程内存），所以这种值**没法直接拿来用** —— 脚本会明确告诉你「这是加密信封，需改用 workbuddy_login.py」。
+>
+> **自检**：值以 `{"$wbEncrypted"` 开头（或含 `"envelope"`）＝ 信封，不可用；以 `eyJ` 开头 ＝ 明文，可用。
+>
+> **解法**：用方式 A（`python workbuddy_login.py`）；或临时在旧版本客户端上登录后按方式 B 取。
 
 > ⚠️ AT 和 RT 之间用**英文冒号 `:`** 分隔；等号后面的引号不要带
 > ⚠️ **RT 是你唯一的续期凭据，泄露了别人就能操作你的账号**
@@ -196,6 +227,8 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，内置 PushPlus 推送，运行结果推到微信 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx`（自建服务器换域名即可） |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人。填完整 webhook URL，或只填 key（自动补全域名） |
+| `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人。安全设置选「自定义关键词」时，标题里带该词即可；选「加签」则再加 `DINGTALK_SECRET` |
+| `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（`SEC` 开头那串） |
 | `WORKBUDDY_TASKS` | ⬜ | 可选，**白名单**：只跑列出的子任务（逗号/空格/顿号分隔，大小写不敏感） |
 | `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，**黑名单**：跳过列出的子任务（与白名单可叠加，黑名单优先） |
 | `WORKBUDDY_MP_GAP` | ⬜ | 可选，mp 对话事件之间的间隔秒数（默认 `45`） |
@@ -213,6 +246,16 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 > 代号：成长任务直接用 `task_code`（如 `chat_5`、`expert_5`、`black_cat`、`Sequential_Tasks_5`）；玩法/流程用别名 `checkin` `travel` `lottery` `redeem` `gift` `makeup` `badges` `blindbox` `buddy_info` `desktop` `school`。
 >
 > 被跳过的任务**不会执行、也不会被领奖**（在列表里保持未完成）；`first_buddy` 与 accept/领奖流程不受过滤影响。
+>
+> ⚠️ **别把「使用类」任务全关掉**：成长中心页面上那块「今日活跃 / 热力墙」是由**使用行为**（对话、文档、桌面等任务产生的事件）点亮的，**签到只给积分、不点热力墙**。若白名单里没有这类任务，页面会显示「开始使用以点亮今日热力墙」——那是活跃度、不是签到失败（签到状态看日志里的连签/累计即可）。
+>
+> 想两者兼得，保留**一个**使用类任务即可，例如：
+>
+> ```bash
+> WORKBUDDY_TASKS=checkin,travel,chat_5     # 签到 + 旅行 + 1 次对话（点亮热力墙）
+> ```
+>
+> 脚本在检测到「一个使用类任务都没保留」时会直接打印 ⚠️ 提醒，不会再让人误会成签到失败。
 
 > ⚠️ **日志出现 `token format error`（或 `12153`）怎么办？** 说明服务端认为你给的 RT 不是它签发的合法格式。脚本会先做一次**本地凭据体检**（不联网）并打印结论：
 >
@@ -221,6 +264,7 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 > | `RT 的 typ=Bearer（应为 Offline）` | **AT/RT 写反了**——顺序必须是 `手机号:AT:RT` |
 > | `RT 不是 eyJ 开头的三段式 JWT` | 被截断，或带了引号/空格/换行/中文冒号 |
 > | `签发域是 …，不是 CN 站` | 粘成了国际版或其他应用的 token（CN 站合法签发域是 `www.codebuddy.cn/auth/realms/copilot`） |
+> | 值是 `{"$wbEncrypted":1,…}` 或含 `"envelope"` | **新版客户端加密信封**（5.6.2+ AtRestEncryption）——解密密钥不落盘（只在客户端进程内存），改用 `python workbuddy_login.py` 短信登录取明文 |
 >
 > 另外两种体检看不出来的情况：③ 该 RT 已被其他工具（面板/网关/另一台机器）轮换过；④ 粘的是 `CodeBuddyExtension\Data\Public\auth` 里**别的应用**的 token。最稳的做法：`python workbuddy_login.py` 重新登录拿最新一行。
 
@@ -258,7 +302,7 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 
 > 🔗 **前置条件**：`first_buddy`（领取Buddy）是其余 17 项任务的登记前置——服务端对**没有 Buddy 实例**的账号会拒绝这些任务的 accept（`prerequisite not met: first_buddy (no buddy instance)`）。脚本已把领养链路提到云端任务最前面，并在 accept 报前置错误时**自动补跑前置再重试登记**。
 >
-> ⏳ **任务有效期**：部分任务由服务端下发 `valid_start` / `valid_end`（例如 `Buddy_App_QQ` 至 **2026-10-10**、`Hp_Appearance` 至 2026-11-02、`Expert_lighthouse` 至 2026-11-13），过期后不再能领取；脚本每次运行会顺带读取任务行，遇到 `locked=true`（未到上线时间）会直接跳过并给出解锁日期。
+> ⏳ **任务有效期**：部分任务由服务端下发 `valid_start` / `valid_end`（例如 `Buddy_App_QQ` 至 **2026-10-10**、`Hp_Appearance` 至 2026-11-02、`Expert_lighthouse` 至 2026-11-13），过期后不再能领取。脚本每次运行会读取任务行并做两件事：`locked=true`（未到上线时间）直接跳过并给出解锁日；**未完成且 7 天内到期 / 已过期**的任务打印 ⏰ 提醒，避免白白错过奖励。
 
 ### 🏫 开学季活动（5 项 · 4 项全自动 + 幸运大转盘）
 
@@ -328,6 +372,7 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 
 - **📊 全中文报告**：任务代码自动翻译成中文（如 `skill_1` → 尝鲜热门技能），每账号独立分块 + 总计 + 待办分布，一目了然。
 - **🔍 未覆盖任务检测**：每次运行扫描成长任务列表，发现脚本尚未适配的新任务会打印 ⚠️ 提示，方便及时更新脚本。
+- **⏰ 任务到期预警**：读任务行的 `valid_end`，对「未完成 + 7 天内到期 / 已过期」的任务打印 ⏰ 提醒（与签到活动到期预警同一套思路）。
 - **♻️ 幂等补缺**：所有任务先查进度再执行，已完成 / 已领取直接跳过，重复运行零副作用。
 - **⏰ 智能续期**：距上次刷新 > 10 天或 AT 7 天内过期才刷新，避免无谓轮换。
 - **🔄 API 重试**：网络错误 / 5xx 自动指数退避重试 3 次；`--gap` 可调写动作间隔防频控。
@@ -348,8 +393,8 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 - **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族；指纹按**官方小程序源码**口径（`ideVersion/extVersion=2.2.8`、`android 14 / arm64`、`source=mini_program`），对话事件的 `conversationId` / `requestId` / `traceId` 同值传递。
 - **⏱️ mp 真人节奏 + accept 后回读**：对话判据逐条 45s±10s（对齐上游反作弊实测，避免「先计数后被整体回滚」）；accept 后重读真实 `target`，杜绝「少报 → 误判达标 → claim 400」。
 - **🔁 瞬时错误有界重试**：每日签到 / 余额 / 用量对网络抖动与 5xx 做 2s/4s 退避重试（最多 2 次），业务错误（如「今天已签到」）不重试。
-- **📢 三渠道推送**：PushPlus（微信）+ Bark（iOS）+ 企业微信群机器人，可同时配置互不影响。
-  企业微信只需一个 webhook（群设置 → 群机器人 → 添加 → 复制 URL）。
+- **📢 五渠道推送**：PushPlus（微信）+ Bark（iOS）+ 企业微信群机器人 + 钉钉群机器人 + **青龙面板默认通知**，配了哪个推哪个，互不影响。
+  企业微信/钉钉只需一个 webhook；青龙用户连 webhook 都不用填——脚本自动读 `QL_DIR/config/auth.json` 的 token 调面板通知接口（`/api/system/notify` 与 `/api/system/message` 两个路由都试，鉴权头/查询参数都兼容）。
 
 ---
 
@@ -422,6 +467,15 @@ WorkBuddy-Daily/
 ├── LICENSE                  # MIT 许可证
 └── README.md
 ```
+
+---
+
+## 📦 版本与发布
+
+- **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
+- Release 标题括号里是**脚本自身的版本号**（如 `v1（脚本 v3.3）`），与文件头、日志里的版本一致
+- 每个 Release 都带三个资产（完整包 zip / 主脚本 `workbuddy_daily.py` / 登录工具 `workbuddy_login.py`）+ **SHA256 校验值**
+- 下载页：<https://github.com/L0NE-6/WorkBuddy-Daily/releases>；青龙 / Actions 想固定版本就下对应 Release 的资产，想跟最新就用仓库 `main`
 
 ---
 

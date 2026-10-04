@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v2.8
+🌱 WorkBuddy Daily - 全能签到脚本 v3.3
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -19,7 +19,8 @@
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
    🎁 自动领奖       扫描全部已完成任务自动领取；completed 未领的自动补领
-   📢 三渠道推送     PushPlus（微信）+ Bark（iOS）+ 企业微信机器人，可同时配置
+   📢 多渠道推送     PushPlus / Bark / 企业微信 / 钉钉 / 青龙默认通知，配了哪个推哪个
+                     青龙环境会自动读面板 token，直接用面板里配好的通知渠道
    🧩 幂等安全       重复运行只补缺口，不会重复领取或重复操作
    🔄 API 重试       网络/5xx 自动指数退避重试，写动作间隔可调（--gap）
    🔗 稳定指纹       每账号 md5 派生固定 machineId，桌面/web/小程序三域对齐官方埋点
@@ -30,6 +31,10 @@
    2. 设置变量     WORKBUDDY_REFRESH_TOKEN = 每行一个 "手机号:AT:RT"（多账号换行分隔）
    3. 定时任务     0 7,12 * * *    日常全流程
                   30 23 * * *     夜猫子活动窗口（23:00-08:00，必须单独排程）
+
+   📦 下载脚本   从 Releases 下载：完整包 zip / 单文件 workbuddy_daily.py / 登录工具
+                 https://github.com/L0NE-6/WorkBuddy-Daily/releases
+                 每次更新单独发一个 Release（v1 → v2 → v3 递增，历史版本保留可下载）
 
 ⌨️ 命令行参数
    python workbuddy_daily.py               全流程：续期 → 查询 → 任务 → 开学季 → 领奖
@@ -51,12 +56,20 @@
      别名：checkin 签到 / travel 旅行 / lottery 抽奖 / redeem 连登兑换 / gift 礼包补偿
            makeup 补签 / badges 徽章 / blindbox 盲盒 / buddy_info Buddy信息 / desktop 桌面 / school 开学季
      例：只想每天做签到+旅行 → WORKBUDDY_TASKS=checkin,travel（其余任务以后想做时再放开）
+     ⚠️ 若过滤后没有任何「使用类」任务（对话/桌面/文档…），成长中心的「今日活跃
+        （热力墙）」不会被点亮——签到只给积分，不点热力墙（脚本会主动提醒）
+        想两者兼得：WORKBUDDY_TASKS=checkin,travel,chat_5（保留一个对话类任务）
    PUSHPLUS_TOKEN            【可选】PushPlus 推送（微信）
    BARK_URL                  【可选】Bark 推送（iOS），如 https://api.day.app/xxxxxxxx
    WECOM_WEBHOOK             【可选】企业微信群机器人（完整 URL 或仅 key）
+   DINGTALK_WEBHOOK          【可选】钉钉群机器人 webhook（安全设置：自定义关键词或加签）
+   DINGTALK_SECRET           【可选】钉钉加签密钥（机器人选「加签」时必填）
    WORKBUDDY_MP_GAP          【可选】mp 对话事件间隔秒数（默认 45，可调小提速）
 
 获取变量值（首次必看）
+   ⚠️ WorkBuddy 5.6.2+ 客户端默认开启 AtRestEncryption：认证文件里的 accessToken/refreshToken
+      变成 AES-256-GCM 信封（{"$wbEncrypted":1,"envelope":...}，密钥只在客户端进程内存），
+      直接拷贝无法使用 —— 这种情形请改用 python workbuddy_login.py（短信登录，直接下发明文）
    第一步：在电脑上安装并登录 WorkBuddy 桌面端
    第二步：登录成功后，用记事本打开下面的文件：
        C:/Users/你的用户名/AppData/Local/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info
@@ -112,6 +125,7 @@
    · 真实场景表：模板任务取服务端 /console/as/support/scenes 的 id（拉不到回落内置表）
    · 签到读数：签到后读 /billing/meter/checkin-activity-status（连签天数/累计积分/连签奖励日）
      并做活动到期预警：距 end_time ≤7 天或活动已关闭时，日志给出 ⚠️ 提示
+   · 任务到期预警：未完成任务在 valid_end 前 7 天内（或已过期）时打印 ⏰ 提醒
    · mp 定时任务：Sequential_Tasks_4 用官方 mp 指纹形状（mode=CLOUD、无 rrule），失败回落桌面域
    · 画布与灵感：真实对话 + 桌面链（wbx_design_canvas_* / playbook_cta_click），失败回落 web 裸事件
    · 主题目录：和平精英主题取 /v2/operation-platform/appearance/resources 真 resource_key + meta
@@ -129,6 +143,7 @@
    · 凭据体检：续期前本地看 RT/AT 结构与签发域（typ=Offline / codebuddy.cn realm），
      把 12153 token format error 提前翻译成“粘反了 / 粘错了文件 / 截断了”
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
+   · 推送渠道：PushPlus / Bark / 企业微信 / 钉钉 / 青龙默认通知，配了哪个推哪个（都没配只提示）
    · 数据文件：wb_refresh_tokens.json 自动生成与维护，无需手动管理
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
 
@@ -137,7 +152,7 @@
 🔒 隐私说明
    脚本不含任何账号、手机号、Token 或设备信息，所有凭据均由环境变量注入。
 """
-import sys, os, re, json, time, uuid, base64, glob, hashlib, glob as _glob, shutil, subprocess, threading, queue
+import sys, os, re, json, time, uuid, base64, glob, hashlib, hmac, glob as _glob, shutil, subprocess, threading, queue
 import requests
 
 
@@ -282,23 +297,72 @@ TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WORKBUDDY
 
 
 
+def _jwt_claims(tok):
+    """本地解 JWT payload（不验签）：返回 dict；失败返回 {}。
+
+    自包含（不依赖文件后面定义的辅助函数）——自举 _bootstrap_store() 在模块加载早期
+    就会调到它。
+    """
+    try:
+        seg = (tok or "").split(".")
+        if len(seg) != 3:
+            return {}
+        s = seg[1]; s += "=" * (4 - len(s) % 4)
+        d = json.loads(base64.urlsafe_b64decode(s))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _token_kind(tok):
+    """按 JWT 的 typ 判定类型：'AT'（typ=Bearer）/ 'RT'（typ=Offline）/ ''（未知）。
+
+    实测 CN 站：AT=Bearer、RT=Offline——用户只粘一个 token 时靠它自动归位。
+    """
+    return {"Bearer": "AT", "Offline": "RT"}.get(str(_jwt_claims(tok).get("typ", "")), "")
+
+
+def _token_user(tok):
+    """从 token 的 preferred_username 取手机号（AT:RT 没写手机号时用）；取不到返回 ''。"""
+    return str(_jwt_claims(tok).get("preferred_username") or "").strip()
+
+
 def _parse_env_tokens(raw):
-    """解析环境变量：支持换行或 @ 分隔；每项格式 "手机号:AT:RT" 或 "手机号:RT" 或 纯token"""
+    """解析环境变量：支持换行或 @ 分隔；每项返回 (手机号, AT, RT)。
+
+    合法形态（引号/首尾空格会被清理）：
+      手机号:AT:RT      ← 推荐（AT 可留空 → 手机号::RT）
+      手机号:RT
+      AT:RT             ← 没写手机号：自动从 AT 的 preferred_username 反推
+      纯 AT / 纯 RT     ← 按 JWT typ 自动识别（AT=Bearer / RT=Offline）
+    """
     items = []
     if not raw:
         return items
     for line in raw.replace("@", "\n").splitlines():
-        line = line.strip()
+        line = line.strip().strip('"').strip("'").strip()
         if not line:
+            continue
+        if "$wbEncrypted" in line or '"envelope"' in line:
+            # 新版客户端（5.6.2+）加密信封——不是凭据，丢弃后由启动诊断明确指出
             continue
         # maxsplit=2：RT 里若含冒号也不会被截断（旧写法取 parts[2] 会丢尾巴）
         parts = line.split(":", 2)
-        if len(parts) >= 3 and not parts[0].startswith("eyJ"):
+        if len(parts) == 3:
             items.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
-        elif len(parts) == 2 and not parts[0].startswith("eyJ"):
-            items.append((parts[0].strip(), "", parts[1].strip()))
+        elif len(parts) == 2:
+            a, b = parts[0].strip(), parts[1].strip()
+            if a.startswith("eyJ"):      # AT:RT（漏写手机号）→ 从 AT 里取
+                items.append((_token_user(a), a, b))
+            else:                        # 手机号:RT
+                items.append((a, "", b))
         else:
-            items.append(("", line, ""))
+            kind = _token_kind(line)
+            if kind == "RT":
+                items.append(("", "", line))
+            elif kind == "AT" or line.startswith("eyJ"):
+                items.append((_token_user(line), line, ""))
+            # 其余（明显不是 JWT 的内容）直接丢弃：由「未找到可用账号」的诊断输出指出问题
     return items
 
 
@@ -312,9 +376,9 @@ def _bootstrap_store():
             pass
     store = {}
     for user, at, rt in _parse_env_tokens(os.environ.get("WORKBUDDY_REFRESH_TOKEN", "")):
-        if not rt:
+        if not (rt or at):      # 只有 AT 也收：能跑到 AT 过期为止（无法续期）
             continue
-        key = user or (jwt_user(at) if at else "acct-%d" % (len(store) + 1))
+        key = user or (_token_user(at) if at else "acct-%d" % (len(store) + 1))
         store[key] = {"refresh_token": rt, "access_token": at}
     if store:
         json.dump(store, open(REFRESH_STORE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
@@ -349,6 +413,10 @@ def _token_sanity(rt, at):
     for name, tok in (("RT", rt), ("AT", at)):
         tok = (tok or "").strip()
         if not tok:
+            continue
+        if "$wbEncrypted" in tok or '"envelope"' in tok:
+            tips.append("%s 是 WorkBuddy 5.6.2+ 的 AtRestEncryption 加密信封（不是明文 JWT）——密钥只驻留" 
+                        "客户端进程内存，无法直接使用；请用 python workbuddy_login.py（短信登录）获取明文凭据" % name)
             continue
         if not tok.startswith("eyJ") or tok.count(".") != 2:
             tips.append("%s 不是 eyJ 开头的三段式 JWT（长度 %d）——被截断、带了引号/空格，或粘错了字段" % (name, len(tok)))
@@ -462,13 +530,16 @@ def auto_refresh():
         existing_rt = {v.get("refresh_token") for v in store.values()}
         added = 0
         for user, at, rt in _parse_env_tokens(env_rt):
-            if not rt:
+            if not (rt or at):
                 continue
-            key = user or (jwt_user(at) if at else "env-%d" % (len(store) + 1))
-            if rt not in existing_rt:
-                store[key] = {"refresh_token": rt, "access_token": at or store.get(key, {}).get("access_token", "")}
+            key = user or (_token_user(at) if at else "env-%d" % (len(store) + 1))
+            if rt and rt in existing_rt:
+                continue
+            store[key] = {"refresh_token": rt or store.get(key, {}).get("refresh_token", ""),
+                          "access_token": at or store.get(key, {}).get("access_token", "")}
+            if rt:
                 existing_rt.add(rt)
-                added += 1
+            added += 1
         if added:
             json.dump(store, open(REFRESH_STORE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
             print("📝 从 WORKBUDDY_REFRESH_TOKEN 新增 %d 个账号的刷新令牌" % added)
@@ -504,6 +575,9 @@ def auto_refresh():
     updated = {}
     bad_rt = 0
     for user, ent in due.items():
+        if not ent.get("refresh_token"):     # 只有 AT：刷不了，别报成“续期失败”
+            print("   ℹ️ %s 只有 AT 没有 RT，无法续期（AT 到期后请重新获取一行完整凭据）" % user)
+            continue
         tips = _token_sanity(ent.get("refresh_token", ""), ent.get("access_token", ""))
         if tips:
             print("   🩺 %s 凭据体检:" % user)
@@ -556,7 +630,37 @@ def load_accounts():
         items = [x.strip() for x in env.replace("@", "\n").splitlines() if x.strip()]
         return [{"note": "账号%d" % (i + 1), "access_token": t}
                 for i, t in enumerate(items)]
-    print("未找到账号：请设置环境变量 WORKBUDDY_REFRESH_TOKEN（每行 手机号:AT:RT）")
+    print("❌ 未找到可用账号（环境变量与本地令牌文件都没给出凭据）")
+    _raw = os.environ.get("WORKBUDDY_REFRESH_TOKEN", "").strip()
+    if _raw:
+        lines = [x for x in _raw.replace("@", "\n").splitlines() if x.strip()]
+        kinds = []
+        for x in lines[:5]:
+            if "$wbEncrypted" in x or '"envelope"' in x:
+                kinds.append("加密信封 ✗（5.6.2+ AtRestEncryption，需改用 workbuddy_login.py）")
+                continue
+            parts = x.split(":", 2)
+            if len(parts) >= 3 and not parts[0].startswith("eyJ"):
+                kinds.append("手机号:AT:RT ✓")
+            elif len(parts) == 2 and parts[0].strip().startswith("eyJ"):
+                kinds.append("AT:RT ✓（无手机号，已自动识别）")
+            elif len(parts) == 2:
+                kinds.append("手机号:RT ✓")
+            else:
+                kinds.append("单 token(%s)" % (_token_kind(x.strip()) or "无法识别"))
+        print("   ℹ️ 该变量已设置：%d 行；逐行识别：%s" % (len(lines), "、".join(kinds)))
+        print("      若出现「无法识别」：复制不完整 / 不是 eyJ 开头的 JWT / 混入了全角逗号冒号；")
+        print("      正确姿势（每行一个）：手机号:AT:RT  或  AT:RT（AT/RT 均为 eyJ 长串，英文冒号）")
+        print("      青龙用户：确认变量名完全一致、且变量处于「启用」状态；改完直接重跑本任务即可")
+        print("      若出现「加密信封」：新版客户端把凭据加了密，无法直接拷贝——请用 workbuddy_login.py")
+    else:
+        print("   ℹ️ 未读到 WORKBUDDY_REFRESH_TOKEN：青龙请确认变量名/启用状态；")
+        print("      GitHub Actions 请确认已加到 Settings → Secrets → Actions（名字大小写一致）")
+    print("   📖 获取方式：python workbuddy_login.py（短信登录，直接输出一行可粘贴凭据）")
+    # 青龙专属坑（issue #16 实证）：裸 python 调用不注入面板变量
+    if os.environ.get("QL_DIR") or os.path.exists("/ql"):
+        print("   🐧 检测到青龙环境：任务命令请用青龙运行器 —— `task workbuddy_daily.py`（从脚本列表新建任务）")
+        print("      不要写裸 `python workbuddy_daily.py`：裸 python 不会注入面板变量，就会报这个错")
     sys.exit(1)
 
 
@@ -2483,7 +2587,11 @@ def t_school_season(s, uid, nick, log):
 
 
 def t_unknown_tasks(s, uid, nick, log):
-    """检测脚本未覆盖的新任务，明确提示"""
+    """任务列表体检：未覆盖的新任务提示 + 未完成任务的有效期预警
+
+    服务端任务行带 valid_start / valid_end（如 Buddy_App_QQ 至 2026-10-10）——
+    过期后就领不到了，所以对「未完成且 7 天内到期 / 已过期」的任务给出 ⏰ 提示。
+    """
     known = {"create_canvas", "playbook_prompt", "RichMeow_Chat", "Library_read", "Expert_lighthouse",
              "Expert_Philanthropy", "Hp_Appearance", "Buddy_App", "Buddy_App_QQ", "Model_chat_GLM5.2",
              "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_1", "expert_5",
@@ -2492,7 +2600,8 @@ def t_unknown_tasks(s, uid, nick, log):
              "Sequential_Tasks_4", "Sequential_Tasks_5",
              "Sequential_Tasks_6", "Sequential_Tasks_7", "school_season"}
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
-    for t in r.get("data", {}).get("tasks", []):
+    rows = r.get("data", {}).get("tasks", [])
+    for t in rows:
         if not isinstance(t, dict):
             continue
         code = t.get("task_code", "")
@@ -2506,6 +2615,29 @@ def t_unknown_tasks(s, uid, nick, log):
             log("   ⚠️新任务需手动: %s %s (%s) — 涉及真实捐款" % (code, t.get("title", ""), desc))
         else:
             log("   ⚠️未覆盖新任务: %s %s (%s) — 请反馈更新脚本" % (code, t.get("title", ""), desc))
+    # 有效期预警：未完成但即将过期（或已过期）的任务
+    import datetime
+    today = beijing_today()
+    soon = []
+    for t in rows:
+        if not isinstance(t, dict) or t.get("accept_status") in ("claimed", "completed"):
+            continue
+        ve = str(t.get("valid_end") or "")[:10]
+        if len(ve) < 10:
+            continue
+        try:
+            d = datetime.date(*[int(x) for x in ve.split("-")])
+        except Exception:
+            continue
+        left = (d - today).days
+        if left < 0:
+            soon.append((t.get("task_code", ""), ve, "已过期"))
+        elif left <= 7:
+            soon.append((t.get("task_code", ""), ve, "%d 天后到期" % left))
+    if soon:
+        log("   ⏰ 任务有效期提醒（未完成）:")
+        for code, ve, when in soon[:6]:
+            log("      · %s %s（%s）" % (code, ve, when))
 
 
 # ---------- 开学季活动（school_open_day_2026） ----------
@@ -3048,6 +3180,16 @@ def run_account(idx, acc, do_desktop):
         log("   ⚙️ 任务过滤生效：%s%s" % (
             ("仅执行 " + ",".join(sorted(TASK_ONLY))) if TASK_ONLY else "", 
             (("；跳过 " + ",".join(sorted(TASK_SKIP))) if TASK_SKIP else "")))
+        # 「使用类」任务才会给成长中心记活跃（热力墙）。全被过滤掉时明确提醒：
+        # 签到只给积分、不点热力墙——别把页面上的「开始使用以点亮今日热力墙」当成签到失败
+        _usage = {"chat_5", "model_chat_glm5.2", "desktop", "richmeow_chat", "skill_1", "black_cat",
+                  "expert_5", "expert_team_use_3", "template_5", "create_canvas", "playbook_prompt",
+                  "sequential_tasks_1", "sequential_tasks_3", "sequential_tasks_5",
+                  "automation_1", "library_read", "hp_appearance", "buddy_app", "buddy_app_qq"}
+        _kept = {t for t in (TASK_ONLY or _usage) if t not in TASK_SKIP}
+        if not (_kept & _usage):
+            log("   ⚠️ 未包含任何「使用类」任务 → 成长中心的今日活跃（热力墙）不会点亮")
+            log("      （签到/积分不受影响；想同时点亮热力墙建议保留一个对话类任务：WORKBUDDY_TASKS=checkin,travel,chat_5）")
 
     def _run(label, codes, fn):
         """子任务调度：按 TASK_ONLY / TASK_SKIP 决定是否执行，单项异常不拖垮整轮。"""
@@ -3254,12 +3396,87 @@ def send_notify(title, content):
     return False
 
 
+def _dingtalk_notify(title, content):
+    """钉钉群机器人；未配置 DINGTALK_WEBHOOK 则跳过。
+
+    · 关键词模式：机器人安全设置选「自定义关键词」时，标题里带该词即可
+    · 加签模式：另配 DINGTALK_SECRET，自动拼 timestamp + sign（HMAC-SHA256→Base64→URL 编码）
+    """
+    url = os.environ.get("DINGTALK_WEBHOOK", "").strip()
+    if not url:
+        return False
+    secret = os.environ.get("DINGTALK_SECRET", "").strip()
+    try:
+        if secret:
+            ts = str(int(time.time() * 1000))
+            sign = base64.b64encode(hmac.new(secret.encode("utf-8"),
+                                             ("%s\n%s" % (ts, secret)).encode("utf-8"),
+                                             hashlib.sha256).digest())
+            url = "%s%stimestamp=%s&sign=%s" % (url, "&" if "?" in url else "?", ts,
+                                            requests.utils.quote(sign))
+        s = requests.Session(); s.trust_env = False
+        r = s.post(url, json={"msgtype": "text", "text": {"content": "%s\n%s" % (title, content)}},
+                   timeout=20, verify=False)
+        d = r.json()
+        if d.get("errcode") == 0:
+            print("📢 钉钉推送成功")
+            return True
+        print("📢 钉钉推送失败: %s" % str(d.get("errmsg", ""))[:80])
+    except Exception as e:
+        print("📢 钉钉异常: %s" % str(e)[:80])
+    return False
+
+
+def _ql_notify(title, content):
+    """青龙面板自带的默认通知渠道（面板里配好的那种）。
+
+    不依赖额外插件：读 QL_DIR/config/auth.json 里的 token，调面板通知接口。
+    青龙各版本路由不同（/api/system/notify 与 /api/system/message 都出现过），
+    逐个试；鉴权先试 Authorization 头、再试 ?token= 查询参数。全程失败只打一行提示。
+    可用 QL_DIR / QL_URL / QL_TOKEN 显式指定（默认 /ql 与 http://127.0.0.1:5700）。
+    """
+    ql_dir = os.environ.get("QL_DIR", "").strip() or "/ql"
+    base = (os.environ.get("QL_URL", "").strip() or "http://127.0.0.1:5700").rstrip("/")
+    token = os.environ.get("QL_TOKEN", "").strip()
+    if not token:
+        try:
+            token = json.load(open(os.path.join(ql_dir, "config", "auth.json"),
+                                 encoding="utf-8")).get("token", "")
+        except Exception:
+            token = ""
+    if not token:
+        return False          # 非青龙环境（或未登过面板）：静默跳过，不算失败
+    payload = {"title": title, "content": content}
+    for path in ("/api/system/notify", "/api/system/message"):
+        for use_query in (False, True):
+            try:
+                s = requests.Session(); s.trust_env = False
+                url = base + path + (("?token=" + token) if use_query else "")
+                hdrs = {} if use_query else {"Authorization": "Bearer " + token}
+                r = s.post(url, json=payload, headers=hdrs, timeout=20, verify=False)
+                d = r.json() if r.content else {}
+                if r.status_code == 200 and str(d.get("code")) in ("200", "0"):
+                    print("📢 青龙通知推送成功")
+                    return True
+            except Exception:
+                continue
+    print("📢 青龙通知推送失败（面板可能未配置通知渠道或路由不同，可用 QL_TOKEN/QL_URL 显式指定）")
+    return False
+
+
 def send_notify_all(title, content):
-    """推送通知到所有已配置的渠道（PushPlus + Bark + 企业微信）。"""
-    r1 = send_notify(title, content)
-    r2 = _bark_notify(title, content)
-    r3 = _wecom_notify(title, content)
-    return r1 or r2 or r3
+    """推送到所有已配置的渠道：PushPlus / Bark / 企业微信 / 钉钉 / 青龙默认通知。
+
+    配了哪个推哪个，都没配就只打印一行说明（不影响签到流程）。
+    """
+    results = [send_notify(title, content),        # PushPlus
+               _bark_notify(title, content),       # Bark (iOS)
+               _wecom_notify(title, content),      # 企业微信
+               _dingtalk_notify(title, content),   # 钉钉
+               _ql_notify(title, content)]         # 青龙面板默认通知
+    if not any(results):
+        print("ℹ️ 未配置推送渠道（PUSHPLUS_TOKEN / BARK_URL / WECOM_WEBHOOK / DINGTALK_WEBHOOK 任选其一）")
+    return any(results)
 
 
 def main():
