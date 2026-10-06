@@ -195,6 +195,8 @@ python workbuddy_login.py
 > **自检**：值以 `{"$wbEncrypted"` 开头（或含 `"envelope"`）＝ 信封，不可用；以 `eyJ` 开头 ＝ 明文，可用。
 >
 > **解法**：用方式 A（`python workbuddy_login.py`）；或临时在旧版本客户端上登录后按方式 B 取。
+>
+> 💡 **想「免粘贴、直接读本机客户端会话」？** 社区项目 `88lin/workbuddy-auto-signin`（★近千、同样单文件）内置了「用本机 WorkBuddy 自带的 Electron 运行时解密 `sym-v1` 信封」的实现（密钥不落盘，只在子进程内存中用 Node `crypto` 做 AES-256-GCM），需本机装有对应版本客户端。本仓库走的是环境变量 + 短信登录（不碰加密文件），两者可互为备用。
 
 > ⚠️ AT 和 RT 之间用**英文冒号 `:`** 分隔；等号后面的引号不要带
 > ⚠️ **RT 是你唯一的续期凭据，泄露了别人就能操作你的账号**
@@ -464,6 +466,7 @@ WorkBuddy-Daily/
 ├── workbuddy_login.py       # 登录工具（短信验证码换 Token）
 ├── requirements.txt         # 依赖（仅 requests）
 ├── .gitignore               # 屏蔽凭据/运行数据
+├── assets/                  # 资源（打赏收款码）
 ├── LICENSE                  # MIT 许可证
 └── README.md
 ```
@@ -491,6 +494,22 @@ WorkBuddy-Daily/
 
 ---
 
+## ☕ 支持与投喂
+
+脚本是**完全免费、无广告、无任何功能限制**的（本仓库与发布包也不含你的任何数据）。
+如果它确实帮你省了时间、多领了积分，欢迎请我喝杯咖啡 —— **纯自愿，不影响任何功能**，也不影响我在 Issue 里的响应速度 🙌
+
+<p align="center">
+  <img src="assets/donate-wechat.png" width="260" alt="微信赞赏码" />
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/donate-alipay.jpg" width="260" alt="支付宝收款码" />
+</p>
+<p align="center"><sub>💚 微信支付（左） &nbsp;|&nbsp; 💙 支付宝（右，支持信用卡 / 花呗）</sub></p>
+
+> 💡 **不花钱也能帮上很多忙**：点个 ⭐ Star、提一个带日志的 Issue、发一个 Pull Request、或者把脚本分享给需要的朋友 —— 这些同样是最好的支持。
+
+---
+
 ## 💬 反馈与贡献
 
 遇到问题、有功能建议，或者发现了更好的实现方式，欢迎：
@@ -503,5 +522,5 @@ WorkBuddy-Daily/
 ---
 
 <div align="center">
-  <sub>🌱 如果这个脚本帮到你，点个 <b>Star</b> 支持一下 ✨</sub>
+  <sub>🌱 如果这个脚本帮到你，点个 <b>Star</b> 支持一下，或者到 <a href="#-支持与投喂">支持与投喂</a> 请我喝杯咖啡 ✨</sub>
 </div>
