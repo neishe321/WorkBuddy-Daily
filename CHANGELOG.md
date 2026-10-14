@@ -1,5 +1,12 @@
 # 更新日志
 
+## v3.7（2026-10-11）
+
+- 新增：国际版设备授权登录工具 `workbuddy_intl_login.py`（适配 Google / GitHub / X 注册的纯 OAuth 账号，免手机号）：
+  申请授权会话 → 浏览器授权 → 轮询换令牌 → 取账号信息，输出可直接填入 `WORKBUDDY_INTL_TOKENS`；
+  支持 `--refresh '备注|AT|uid|RT'` 直接续期已有令牌。
+- 安全：`.gitignore` 补上 `wb_intl_login_result.json`、`wb_intl_tokens.json`（含令牌的本地结果文件不入库）。
+
 ## v3.6（2026-10-10）
 
 - 新增：国际版（www.workbuddy.ai）每日活跃脚本 `workbuddy_intl_daily.py`

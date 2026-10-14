@@ -54,6 +54,7 @@ python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 | `WORKBUDDY_INTL_TOKENS` | 多账号，换行或 `&` 分隔；每条 `token` / `备注\|token` / `备注\|token\|uid` / `备注\|token\|uid\|refresh_token` |
 | `WORKBUDDY_TOKEN` | 单账号兜底（国际版登录态） |
 | `WORKBUDDY_INTL_MODELS` | 可选，保活模型链，逗号分隔；默认官方免费的四个 |
+| `WORKBUDDY_INTL_TOKENS`（获取） | 纯 OAuth 账号（Google / GitHub / X）用 `python workbuddy_intl_login.py` 走设备授权登录，免手机号 |
 
 > ⚠️ 国际版登录态与国内版不通用：`workbuddy.ai` 的令牌在 `copilot.tencent.com` 刷不了，反之亦然。
 > 带上 `refresh_token` 时脚本会自动续期并写回 `wb_intl_tokens.json`；只给 AT 时按短期令牌使用。
