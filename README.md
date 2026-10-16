@@ -41,11 +41,14 @@
 
 1. 探测活动是否开放、今天是否已领（`/billing/meter/checkin-activity-status`）；
 2. 开放且未领时领取每日奖励（`/v2/billing/meter/daily-checkin`）；
-3. 发一次最小流式对话完成**活跃保活**（免费模型，不消耗积分）。
+3. 活跃三件事（互补）：
+   - **活跃上报** `POST /v2/report` → 点亮成长中心的「连登」（并回读连登天数）；
+   - **保活对话** `POST /v2/chat/completions` → 维持「账号有调用」（免费模型，不消耗积分）；
+   - **网页会话** `POST /console/as/conversations/` → 上游「当日活跃」计数只认这一发。
 
 ```bash
-python workbuddy_intl_daily.py                      # 探测 + 领取 + 保活
-python workbuddy_intl_daily.py --no-keepalive       # 只探测与领取
+python workbuddy_intl_daily.py                      # 探测 + 领取 + 活跃（上报 / 保活 / 网页会话）
+python workbuddy_intl_daily.py --no-keepalive       # 只探测、领取与上报，不发保活对话与网页会话
 python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 ```
 
@@ -58,7 +61,7 @@ python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 
 > ⚠️ 国际版登录态与国内版不通用：`workbuddy.ai` 的令牌在 `copilot.tencent.com` 刷不了，反之亦然。
 > 带上 `refresh_token` 时脚本会自动续期并写回 `wb_intl_tokens.json`；只给 AT 时按短期令牌使用。
-> 活动未开放属于正常状态，不会当成失败；保活成功与领取成功分开报告。
+> 活动未开放属于正常状态，不会当成失败；签到成功与活跃结果分开报告，任一发失败都不会把签到判成失败。
 
 ## 🚀 部署方式一：青龙面板（三步）
 
@@ -77,7 +80,7 @@ python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 >
 > 📌 官方规则是「**每天 1 次 × 累计 3 天**」，脚本有响应即停，不会一晚空跑多次。
 >
-> 📢 **通知**：面板里配了啥通知就用啥，连 webhook 都不用填 —— 青龙 2.18+ 配 `QL_CLIENT_ID` + `QL_CLIENT_SECRET`（面板「应用授权」，需 system 权限），旧版自动读 `auth.json`；也支持 PushPlus / Bark / 企业微信 / 钉钉四种 webhook 渠道。
+> 📢 **通知**：面板里配了啥通知就用啥，连 webhook 都不用填 —— 青龙 2.18+ 配 `QL_CLIENT_ID` + `QL_CLIENT_SECRET`（面板「应用授权」，需 system 权限），旧版自动读 `auth.json`；也支持 PushPlus / Bark / WxPusher / 企业微信 / 钉钉五种 webhook 渠道。
 
 ```bash
 # 依赖（仅一个）
@@ -99,6 +102,8 @@ pip3 install requests
 | `WORKBUDDY_REFRESH_TOKEN` | ✅ | 每行一个 `手机号:AT:RT`（多账号换行分隔） |
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
+| `WXPUSHER_APP_TOKEN` | ⬜ | 可选，WxPusher 应用令牌（`AT_` 开头），在 wxpusher.zjiecode.com 创建应用后获得 |
+| `WXPUSHER_UID` | ⬜ | 可选，WxPusher 用户 UID（`UID_` 开头），多个用逗号/分号分隔 |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人 webhook（或仅 key） |
 | `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人 webhook（安全设置：自定义关键词或加签） |
 | `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（机器人选「加签」时必填） |
@@ -251,6 +256,34 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 
 ---
 
+## 🧰 可选工具
+
+### 💰 积分到期报告（credits_report.py）
+
+显示余额组成与每笔积分的到期时间（月度套餐月底清零、活动赠送 30 天逐笔到期），支持 Bark / WxPusher 推送：
+
+```bash
+python credits_report.py --cn                          # 国内版，多账号
+python credits_report.py --intl "备注|AT|uid|RT"       # 国际版
+python credits_report.py --cn --wx                     # 追加 WxPusher 推送
+python credits_report.py --cn --bark                   # 追加 Bark 推送
+```
+
+> 只读查询，不会改动账号状态；`--days N` 可调整到期预警窗口（默认 7 天）。
+
+### 🔁 签到日志转发（daily_forward.py）
+
+在 Actions 跑完签到后，读取 `gh run view <RUN_ID> --log` 的日志，重建每个账号的签到报告并按需转发：
+
+```bash
+gh run view <RUN_ID> --log > daily.log
+python daily_forward.py daily.log --wx
+```
+
+> 适合临时补发或统一转发已有日志；主脚本已内置 WxPusher，日常直接配环境变量即可。
+
+---
+
 ## 🔧 环境变量
 
 | 变量 | 必填 | 说明 |
@@ -258,6 +291,8 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 | `WORKBUDDY_REFRESH_TOKEN` | ✅ | 多账号刷新令牌，换行分隔，格式 `手机号:AT:RT`（AT 可留空）。首次运行自动生成 `wb_refresh_tokens.json` 并持续维护 |
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，内置 PushPlus 推送，运行结果推到微信 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx`（自建服务器换域名即可） |
+| `WXPUSHER_APP_TOKEN` | ⬜ | 可选，WxPusher 应用令牌（`AT_` 开头），[官网](https://wxpusher.zjiecode.com) 创建应用后获得 |
+| `WXPUSHER_UID` | ⬜ | 可选，WxPusher 用户 UID（`UID_` 开头，扫码关注后查看），多个用逗号/分号分隔 |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人。填完整 webhook URL，或只填 key（自动补全域名） |
 | `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人。安全设置选「自定义关键词」时，标题里带该词即可；选「加签」则再加 `DINGTALK_SECRET` |
 | `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（`SEC` 开头那串） |
@@ -493,14 +528,19 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 WorkBuddy-Daily/
 ├── .github/
 │   └── workflows/
-│       └── workbuddy.yml    # GitHub Actions 定时工作流
-├── workbuddy_daily.py       # 主脚本（签到/任务/玩法，单文件自包含）
-├── workbuddy_login.py       # 登录工具（短信验证码换 Token）
-├── requirements.txt         # 依赖（仅 requests）
-├── .gitignore               # 屏蔽凭据/运行数据
-├── assets/                  # 资源（打赏收款码）
-├── archive/                 # 已归档：活动结束/服务端已下架的限时任务（如开学季）
-├── LICENSE                  # MIT 许可证
+│       └── workbuddy.yml        # GitHub Actions 定时工作流
+├── workbuddy_daily.py           # 国内版主脚本（签到/任务/玩法，单文件自包含）
+├── workbuddy_login.py           # 国内版登录工具（短信验证码换 Token）
+├── workbuddy_intl_daily.py      # 国际版每日活跃脚本
+├── workbuddy_intl_login.py      # 国际版设备授权登录工具
+├── credits_report.py            # 可选：积分余额与到期报告
+├── daily_forward.py             # 可选：签到日志重建与转发
+├── requirements.txt             # 依赖（仅 requests）
+├── .gitignore                   # 屏蔽凭据/运行数据
+├── assets/                      # 资源（打赏收款码）
+├── archive/                     # 已归档：活动结束/服务端已下架的限时任务（如开学季）
+├── CHANGELOG.md                 # 更新日志
+├── LICENSE                      # MIT 许可证
 └── README.md
 ```
 
@@ -510,7 +550,7 @@ WorkBuddy-Daily/
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
 - Release 标题括号里是**脚本自身的版本号**（如 `v3（脚本 v3.3）`、`v4（脚本 v3.4）`），与文件头、日志里的版本一致
-- 每个 Release 都带三个资产（完整包 zip / 主脚本 `workbuddy_daily.py` / 登录工具 `workbuddy_login.py`）+ **SHA256 校验值**
+- 每个 Release 都带完整包 zip、各脚本单文件与 `SHA256SUMS.txt` 校验文件，按需下载即可
 - 下载页：<https://github.com/L0NE-6/WorkBuddy-Daily/releases>；青龙 / Actions 想固定版本就下对应 Release 的资产，想跟最新就用仓库 `main`
 
 ---

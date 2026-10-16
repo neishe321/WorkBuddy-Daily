@@ -8,12 +8,16 @@ WorkBuddy AI（国际版）每日活跃 - 青龙脚本
   1. 探测   POST /billing/meter/checkin-activity-status
             → data.active（活动是否开放）/ data.today_checked_in（今日是否已领）
   2. 领取   POST /v2/billing/meter/daily-checkin（仅当活动开放且今日未领）
-  3. 保活   POST /v2/chat/completions（发一次最小流式对话）
-            活动要求账号当天有过一次模型调用；免费模型不消耗积分。
+  3. 活跃（三件事，互补）：
+     · 上报  POST /v2/report（chat_request_send 事件）→ 点亮成长中心「连登」
+       （GET /activity/growth/streak 回读天数；userId 必填，缺失会被静默丢弃）
+     · 保活  POST /v2/chat/completions（最小流式对话，维持「账号有调用」）
+     · 网页  POST /console/as/conversations/（带 prompt 建会话）
+       —— 上游「当日活跃」计数只认这一发（桌面端对话与 /v2/report 都不进该计数）
 
 口径说明：
   - 活动未开放是**正常状态**，不会当成失败；
-  - 保活成功不等于签到成功：两者分开报告；
+  - 签到成功 ≠ 活跃成功：分开报告；任一发失败只作附加说明，不把签到判成失败；
   - 一个账号只需要跑一轮，结果推送企业微信 / PushPlus。
 
 环境变量：
@@ -28,7 +32,7 @@ WorkBuddy AI（国际版）每日活跃 - 青龙脚本
 用法：
   python workbuddy_intl_daily.py
   python workbuddy_intl_daily.py --only 1
-  python workbuddy_intl_daily.py --no-keepalive   # 只探测与领取，不做保活
+  python workbuddy_intl_daily.py --no-keepalive   # 只探测、领取与活跃上报，不发保活对话与网页会话
 """
 
 import base64
@@ -54,6 +58,18 @@ CLIENT_VERSION = "5.5.2"
 CLI_VERSION = "2.137.1"
 UA = "WorkBuddy/%s WorkBuddy AI/%s CLI/%s" % (CLIENT_VERSION, CLIENT_VERSION, CLI_VERSION)
 DEFAULT_MODELS = ("deepseek-v4.1-flash", "hy3", "hy4-preview", "hy4-preview-f")
+
+# 活跃链路的三个端点（见文件头「活跃」一节）
+REPORT_PATH = "/v2/report"
+STREAK_PATH = "/activity/growth/streak"
+WEB_CONVERSATIONS_PATH = "/console/as/conversations/"
+
+# 对话链路身份（国际版客户端 5.8.4 实测；渠道校验 11-128 按这组头识别客户端）
+CHAT_IDE_VERSION = "5.8.4"
+CHAT_UA = "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0"
+# 网页通道浏览器 UA（剔除全部桌面端指纹后，网页链路只认 Bearer + X-User-Id）
+WEB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
 
 ONLY = None
 NO_KEEPALIVE = False
@@ -96,23 +112,168 @@ def api_headers(token, uid, accept=None):
     return headers
 
 
-def chat_headers(token, uid, request_id):
-    headers = api_headers(token, uid, accept="text/event-stream")
-    headers.pop("X-Product", None)
-    headers.update({
-        "X-Product": "WorkBuddy AI",
-        "X-Request-ID": request_id,
-        "X-Conversation-Request-ID": request_id,
-        "X-Conversation-ID": request_id,
-        "X-Session-ID": request_id,
+def chat_headers(token, uid):
+    """对话链路请求头 —— 对齐国际版客户端 5.8.4 的会话头族与链路头族（渠道校验 11-128 的判据）。
+
+    会话 / 消息 id 每次请求现生成（官方不拿它们存历史，补的是「有」而不是「稳定」）；
+    不再发 X-Session-ID —— 官方对话请求不带它，旧的恒定派生值本身是一处网关特征。
+    """
+    conversation_id = str(uuid.uuid4())
+    request_id = uuid.uuid4().hex
+    message_id = uuid.uuid4().hex
+    trace_id = uuid.uuid4().hex
+    span_id = uuid.uuid4().hex[:16]
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "User-Agent": CHAT_UA,
+        "X-IDE-Type": "WorkBuddy",
+        "X-IDE-Name": "WorkBuddy",
+        "X-IDE-Version": CHAT_IDE_VERSION,
+        "X-Product": "SaaS",
+        "X-Agent-Intent": "craft",
         "X-Agent-Purpose": "conversation",
-        "X-Conversation-Message-ID": request_id,
+        "X-Agent-Type": "main",
+        "X-Private-Data": "true",
+        "X-Conversation-ID": conversation_id,
+        "X-Conversation-Request-ID": request_id,
         "X-Root-Request-ID": request_id,
+        "X-Conversation-Message-ID": message_id,
+        "X-Request-ID": message_id,
+        "X-Trace-ID": trace_id,
+        "traceparent": "00-%s-%s-01" % (trace_id, span_id),
+        "b3": "%s-%s-1" % (trace_id, span_id),
+        "X-B3-TraceId": trace_id,
+        "X-B3-SpanId": span_id,
+        "X-B3-Sampled": "1",
+        "Accept-Language": "en-US",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CodeBuddy-Request": "1",
         "Origin": BASE,
         "Referer": BASE + "/",
-        "X-Requested-With": "XMLHttpRequest",
-    })
+        "X-Domain": "www.workbuddy.ai",
+        "Authorization": "Bearer %s" % token,
+    }
+    if uid:
+        headers["X-User-Id"] = uid
     return headers
+
+
+def model_chain():
+    """保活 / 网页会话共用的免费模型链（WORKBUDDY_INTL_MODELS 覆盖，缺省四个）。"""
+    models = [m.strip() for m in (os.environ.get("WORKBUDDY_INTL_MODELS") or "").split(",") if m.strip()]
+    return models or list(DEFAULT_MODELS)
+
+
+def report_event(uid):
+    """活跃上报事件（chat_request_send，官方客户端同形状；userId 必填，缺了会被静默丢弃）。"""
+    now_ms = int(time.time() * 1000)
+    conversation_id = "wbintl-" + uuid.uuid4().hex
+    return {
+        "eventCode": "chat_request_send",
+        "timestamp": now_ms,
+        "reportDelay": 0,
+        "mode": "craft",
+        "conversationId": conversation_id,
+        "requestId": conversation_id,
+        "inputLength": 12,
+        "requestModelId": "deepseek-v4.1-flash",
+        "requestModelName": "DeepSeek V4.1 Flash",
+        "isPlan": False,
+        "isAutoExecuteTerminal": False,
+        "isAutoModify": False,
+        "codebaseEnable": False,
+        "maxToken": 0,
+        "maxSteps": 0,
+        "temperature": 0,
+        "maxRetries": 0,
+        "mentionContexts": [],
+        "knowledgeId": [],
+        "knowledgeName": [],
+        "codebaseId": "",
+        "mentionContextCount": 0,
+        "command": "",
+        "expertId": "",
+        "recommendId": "",
+        "skillId": "",
+        "skillCount": 0,
+        "totalCount": 0,
+        "fileUri": "",
+        "presentAt": now_ms,
+        "traceId": "",
+        "rootRequestId": conversation_id,
+        "parentConversationId": conversation_id,
+        "agentName": "default",
+        "agentType": "conversation",
+        "userId": uid,
+    }
+
+
+def report_activity(token, uid):
+    """发一条活跃上报（点亮成长中心连登）并回读天数；返回 (ok, note)，失败不阻断签到。"""
+    if not uid:
+        return False, "缺少账号 uid，无法上报活跃"
+    try:
+        session = requests.Session()
+        session.trust_env = False
+        response = session.post(BASE + REPORT_PATH, headers=api_headers(token, uid),
+                                json=[report_event(uid)], timeout=25, verify=False)
+        payload = json_of(response)
+        if response.status_code != 200 or payload.get("code") not in (0, None):
+            return False, "HTTP %s code=%s" % (response.status_code, payload.get("code"))
+    except Exception as error:
+        return False, str(error)
+    days = None
+    try:
+        session = requests.Session()
+        session.trust_env = False
+        streak = session.get(BASE + STREAK_PATH, headers=api_headers(token, uid), timeout=20, verify=False)
+        streak_payload = json_of(streak)
+        days_value = ((streak_payload.get("data") or {}).get("streak") or {}).get("days")
+        if isinstance(days_value, (int, float)):
+            days = int(days_value)
+    except Exception:
+        days = None
+    if days is not None:
+        return True, "活跃上报成功，连登 %d 天" % days
+    return True, "活跃上报成功"
+
+
+def web_conversation(token, uid):
+    """网页通道建一个带 prompt 的会话（当日活跃计数只认它）；逐个免费模型尝试。"""
+    if not uid:
+        return False, "缺少账号 uid，无法建网页会话"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": WEB_UA,
+        "Origin": BASE,
+        "Referer": BASE + "/app",
+        "Authorization": "Bearer %s" % token,
+        "X-User-Id": uid,
+    }
+    last = ""
+    for model in model_chain():
+        body = {
+            "prompt": "Hi",
+            "model": model,
+            "conversationOrigin": "workbuddy-app",
+            "plugins": [{"name": "weixinpay", "marketplace": "codebuddy-builtin"}],
+        }
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            response = session.post(BASE + WEB_CONVERSATIONS_PATH, headers=headers,
+                                    json=body, timeout=40, verify=False)
+            payload = json_of(response)
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            code = payload.get("code")
+            if response.status_code == 200 and code in (0, None) and data.get("id"):
+                return True, "网页会话已创建"
+            last = "HTTP %s code=%s" % (response.status_code, code)
+        except Exception as error:
+            last = str(error)
+    return False, last or "网页会话创建失败（模型链全部未建成）"
 
 
 def post_json(path, token, uid, body=None, timeout=25, retries=3):
@@ -199,13 +360,9 @@ def claim_daily(token, uid):
 
 
 def keepalive(token, uid):
-    """发一次最小流式对话，让上游把今天记成「活跃」；逐个尝试免费模型。"""
-    models = [m.strip() for m in (os.environ.get("WORKBUDDY_INTL_MODELS") or "").split(",") if m.strip()]
-    if not models:
-        models = list(DEFAULT_MODELS)
+    """发一次最小流式对话，维持账号「有调用」；逐个尝试免费模型。"""
     last = ""
-    for model in models:
-        request_id = str(uuid.uuid4())
+    for model in model_chain():
         body = {
             "model": model,
             "stream": True,
@@ -218,7 +375,7 @@ def keepalive(token, uid):
         try:
             session = requests.Session()
             session.trust_env = False
-            response = session.post(BASE + CHAT_PATH, headers=chat_headers(token, uid, request_id),
+            response = session.post(BASE + CHAT_PATH, headers=chat_headers(token, uid),
                                     json=body, timeout=60, verify=False, stream=True)
             ok = response.status_code == 200
             try:
@@ -369,14 +526,21 @@ def main():
                 log("   %s 领取: %s" % ("✅" if ok else "❌", message))
             else:
                 message = note
+            report_ok, report_note = report_activity(account["token"], account["uid"])
+            log("   %s 活跃上报: %s" % ("✅" if report_ok else "⚠️", report_note))
             if NO_KEEPALIVE:
                 keep_ok, keep_note = False, "已跳过（--no-keepalive）"
+                web_ok, web_note = False, "已跳过（--no-keepalive）"
             else:
                 keep_ok, keep_note = keepalive(account["token"], account["uid"])
                 log("   %s 保活: %s" % ("✅" if keep_ok else "⚠️", keep_note))
-            lines.append("账号%d %s：%s；保活%s" % (
+                web_ok, web_note = web_conversation(account["token"], account["uid"])
+                log("   %s 网页会话: %s" % ("✅" if web_ok else "⚠️", web_note))
+            lines.append("账号%d %s：%s；活跃上报%s；保活%s；网页会话%s" % (
                 index, account["note"], message,
-                ("成功（%s）" % keep_note) if keep_ok else ("未成功（%s）" % keep_note)))
+                ("成功（%s）" % report_note) if report_ok else ("未成功（%s）" % report_note),
+                ("成功（%s）" % keep_note) if keep_ok else ("未成功（%s）" % keep_note),
+                ("成功（%s）" % web_note) if web_ok else ("未成功（%s）" % web_note)))
         except Exception as error:
             log("   ❌ 异常: %s" % error)
             lines.append("账号%d %s：❌ %s" % (index, account["note"], error))

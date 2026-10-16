@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.7
+🌱 WorkBuddy Daily - 全能签到脚本 v3.8
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -57,6 +57,10 @@
         想两者兼得：WORKBUDDY_TASKS=checkin,travel,chat_5（保留一个对话类任务）
    PUSHPLUS_TOKEN            【可选】PushPlus 推送（微信）
    BARK_URL                  【可选】Bark 推送（iOS），如 https://api.day.app/xxxxxxxx
+   WXPUSHER_APP_TOKEN        【可选】WxPusher 应用令牌（AT_ 开头）：官网 https://wxpusher.zjiecode.com
+                             创建应用后获得，扫码关注该应用即可用微信收推送
+   WXPUSHER_UID              【可选】WxPusher 用户 UID（UID_ 开头，扫码关注后在「我的」页查看；
+                             多个用逗号/分号分隔，如 UID_aaa,UID_bbb）
    WECOM_WEBHOOK             【可选】企业微信群机器人（完整 URL 或仅 key）
    DINGTALK_WEBHOOK          【可选】钉钉群机器人 webhook（安全设置：自定义关键词或加签）
    DINGTALK_SECRET           【可选】钉钉加签密钥（机器人选「加签」时必填）
@@ -3159,6 +3163,39 @@ def _bark_notify(title, content):
     return False
 
 
+def _wxpusher_notify(title, content):
+    """WxPusher 推送（微信）；未配置 WXPUSHER_APP_TOKEN / WXPUSHER_UID 则跳过。
+
+    与其它渠道并列，配了就推。UID 支持多个（逗号/分号分隔）。
+    注：接口外层 code=1000 仅表示「受理成功」，实际送达要看 data[] 里每个 uid 的状态码，
+    因此这里要求至少一个接收人 code=1000 才算推送成功。
+    """
+    token = os.environ.get("WXPUSHER_APP_TOKEN", "").strip()
+    uids = [u.strip() for u in re.split(r"[,;，\s]+", os.environ.get("WXPUSHER_UID", "")) if u.strip()]
+    if not token or not uids:
+        return False
+    try:
+        s = requests.Session(); s.trust_env = False
+        r = s.post("https://wxpusher.zjiecode.com/api/send/message",
+                   json={"appToken": token, "content": content, "summary": title[:100],
+                         "contentType": 1, "uids": uids, "verifyPayType": 0},
+                   timeout=20, verify=False)
+        d = r.json()
+        if d.get("code") == 1000:
+            items = d.get("data") or []
+            ok = [x for x in items if x.get("code") == 1000]
+            if ok:
+                print("📢 WxPusher 推送成功（%d/%d 个接收人）" % (len(ok), len(uids)))
+                return True
+            why = "；".join(sorted({str(x.get("status") or x.get("code"))[:80] for x in items}))
+            print("📢 WxPusher 未送达: %s" % (why[:120] or "无明细"))
+            return False
+        print("📢 WxPusher 推送失败: %s" % str(d.get("msg", ""))[:80])
+    except Exception as e:
+        print("📢 WxPusher 异常: %s" % str(e)[:80])
+    return False
+
+
 def send_notify(title, content):
     """PushPlus 推送；未配置 PUSHPLUS_TOKEN 则跳过"""
     token = os.environ.get("PUSHPLUS_TOKEN", "").strip()
@@ -3303,18 +3340,19 @@ def _ql_notify(title, content):
 
 
 def send_notify_all(title, content):
-    """推送到所有已配置的渠道：PushPlus / Bark / 企业微信 / 钉钉 / 青龙默认通知。
+    """推送到所有已配置的渠道：PushPlus / Bark / WxPusher / 企业微信 / 钉钉 / 青龙默认通知。
 
     配了哪个推哪个，都没配就只打印一行说明（不影响签到流程）。
     """
     results = [send_notify(title, content),        # PushPlus
                _bark_notify(title, content),       # Bark (iOS)
+               _wxpusher_notify(title, content),   # WxPusher (微信)
                _wecom_notify(title, content),      # 企业微信
                _dingtalk_notify(title, content),   # 钉钉
                _ql_notify(title, content)]         # 青龙面板默认通知
     if not any(results):
-        print("ℹ️ 未配置推送渠道（PUSHPLUS_TOKEN / BARK_URL / WECOM_WEBHOOK / DINGTALK_WEBHOOK / "
-              "青龙应用授权 QL_CLIENT_ID+QL_CLIENT_SECRET 任选其一）")
+        print("ℹ️ 未配置推送渠道（PUSHPLUS_TOKEN / BARK_URL / WXPUSHER_APP_TOKEN+WXPUSHER_UID / "
+              "WECOM_WEBHOOK / DINGTALK_WEBHOOK / 青龙应用授权 QL_CLIENT_ID+QL_CLIENT_SECRET 任选其一）")
     return any(results)
 
 
