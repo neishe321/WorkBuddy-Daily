@@ -359,6 +359,24 @@ def claim_daily(token, uid):
     return False, claim_label(code, message) or ("HTTP %s" % response.status_code)
 
 
+def day_completed_note(message, available, active, checked, claim_ok, report_ok, web_ok):
+    """活动未开启、但活跃链路已完成时，把结果文案改成「今日活跃已完成」。
+
+    上游 v3.0.8 的判定（issue #277）：活跃上报或网页会话任一成功即算当日活跃
+    完成，积分由上游按活跃异步发放；只保活对话成功不算（它只维持「账号有调用」）。
+    """
+    if claim_ok or not (report_ok or web_ok):
+        return message
+    reasons = []
+    if report_ok:
+        reasons.append("连登已点亮")
+    if web_ok:
+        reasons.append("网页会话已建")
+    if not (available and active and not checked):
+        return "活动未开启，但今日活跃已完成（%s；积分由上游异步发放）" % "、".join(reasons)
+    return "%s；但今日活跃已完成（%s）" % (message, "、".join(reasons))
+
+
 def keepalive(token, uid):
     """发一次最小流式对话，维持账号「有调用」；逐个尝试免费模型。"""
     last = ""
@@ -521,9 +539,10 @@ def main():
                     log("   ⚠️ 令牌续期失败: %s（改用现有令牌）" % new_rt)
             available, active, checked, note = detect_activity(account["token"], account["uid"])
             log("   探测: %s" % note)
+            claim_ok = False
             if available and active and not checked:
-                ok, message = claim_daily(account["token"], account["uid"])
-                log("   %s 领取: %s" % ("✅" if ok else "❌", message))
+                claim_ok, message = claim_daily(account["token"], account["uid"])
+                log("   %s 领取: %s" % ("✅" if claim_ok else "❌", message))
             else:
                 message = note
             report_ok, report_note = report_activity(account["token"], account["uid"])
@@ -536,6 +555,8 @@ def main():
                 log("   %s 保活: %s" % ("✅" if keep_ok else "⚠️", keep_note))
                 web_ok, web_note = web_conversation(account["token"], account["uid"])
                 log("   %s 网页会话: %s" % ("✅" if web_ok else "⚠️", web_note))
+            message = day_completed_note(message, available, active, checked,
+                                         claim_ok, report_ok, web_ok)
             lines.append("账号%d %s：%s；活跃上报%s；保活%s；网页会话%s" % (
                 index, account["note"], message,
                 ("成功（%s）" % report_note) if report_ok else ("未成功（%s）" % report_note),

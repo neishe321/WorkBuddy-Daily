@@ -62,6 +62,7 @@ python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 > ⚠️ 国际版登录态与国内版不通用：`workbuddy.ai` 的令牌在 `copilot.tencent.com` 刷不了，反之亦然。
 > 带上 `refresh_token` 时脚本会自动续期并写回 `wb_intl_tokens.json`；只给 AT 时按短期令牌使用。
 > 活动未开放属于正常状态，不会当成失败；签到成功与活跃结果分开报告，任一发失败都不会把签到判成失败。
+> 活动未开启但活跃上报 / 网页会话成功时，会按「今日活跃已完成」报告（积分由上游异步发放）。
 
 ## 🚀 部署方式一：青龙面板（三步）
 
@@ -543,6 +544,17 @@ WorkBuddy-Daily/
 ├── LICENSE                      # MIT 许可证
 └── README.md
 ```
+
+---
+
+## 🏢 企业版账号说明
+
+企业版账号（桌面端认证文件里带非空 `enterpriseId`）**没有个人成长体系**：上游对签到一律返回
+`400 code 10001`「企业账号不支持该操作」，成长域端点一律 `403`「growth system is only
+available for personal users」（2026-10-07 实测口径）。脚本会**自动识别并跳过**签到与全部
+成长/互动任务，只做令牌续期与查询，不再把这种情况误报成「凭据失效」。
+
+> 企业额度不在个人「资源包」体系内（`get-user-resource*` 对企业号返回空 `Accounts`），请在企业后台查询。
 
 ---
 
