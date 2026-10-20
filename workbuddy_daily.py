@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.13
+🌱 WorkBuddy Daily - 全能签到脚本 v3.14
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -826,7 +826,7 @@ def claim(s, code, log):
         log("   领奖[%s]: HTTP %s" % (code, r.status_code))
 
 
-def report(s, uid, nick, events):
+def report(s, uid, nick, events, base=None, headers=None):
     """events: list of dict；自动补全信封"""
     UA_SHORT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 WorkBuddy/5.5.4"
     mid = derive_id(uid, "machine")   # 稳定指纹：同账号每次相同
@@ -845,7 +845,8 @@ def report(s, uid, nick, events):
         env.update(e)
         out.append(env)
     try:
-        r = s.post(BASE + "/v2/report", json=out, timeout=15, verify=False)
+        r = s.post((base or BASE) + "/v2/report", json=out, timeout=15,
+                   headers=headers, verify=False)
         return r.status_code
     except Exception:
         return 0
@@ -1059,6 +1060,100 @@ def _checkin_tail(s):
         return ""
 
 
+def t_daily_activity(s, uid, nick, log):
+    """点亮成长中心活跃连登。
+
+    签到接口只推进签到活动自己的连签；成长中心的 `growth/streak` 与热力图
+    只认 `/v2/report` 的 `chat_request_send`。每天补发一条，幂等。
+    """
+    state_file = os.getenv("WORKBUDDY_ACTIVITY_STATE", "").strip() or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "workbuddy_activity_state.json")
+    today = beijing_today().isoformat()
+    state = {}
+    try:
+        if os.path.isfile(state_file):
+            with open(state_file, "r", encoding="utf-8") as handle:
+                value = json.load(handle)
+                state = value if isinstance(value, dict) else {}
+    except Exception:
+        state = {}
+    if state.get(uid) == today:
+        log("   🔥每日活跃: 今日已上报，跳过")
+        return
+    now = int(time.time() * 1000)
+    token = str(uuid.uuid4())
+    conv_id = "wb-daily-" + token
+    event = {
+        "eventCode": "chat_request_send",
+        "timestamp": now,
+        "reportDelay": 0,
+        "mode": "craft",
+        "conversationId": conv_id,
+        "requestId": conv_id,
+        "inputLength": 12,
+        "requestModelId": "deepseek-v4-flash",
+        "requestModelName": "DeepSeek V4 Flash",
+        "isPlan": False,
+        "isAutoExecuteTerminal": False,
+        "isAutoModify": False,
+        "codebaseEnable": False,
+        "maxToken": 0,
+        "maxSteps": 0,
+        "temperature": 0,
+        "maxRetries": 0,
+        "mentionContexts": [],
+        "knowledgeId": [],
+        "knowledgeName": [],
+        "codebaseId": "",
+        "mentionContextCount": 0,
+        "command": "",
+        "expertId": "",
+        "recommendId": "",
+        "skillId": "",
+        "skillCount": 0,
+        "totalCount": 0,
+        "fileUri": "",
+        "presentAt": now,
+        "traceId": "",
+        "rootRequestId": conv_id,
+        "parentConversationId": conv_id,
+        "agentName": "default",
+        "agentType": "conversation",
+        "userId": uid,
+    }
+    status = report(
+        s, uid, nick, [event],
+        base=CBDOMAIN,
+        headers={
+            "Origin": CBDOMAIN,
+            "Referer": CBDOMAIN + "/",
+            "User-Agent": "CLI/2.63.2 CodeBuddy/2.63.2",
+            "X-User-Id": uid,
+            "X-Domain": "copilot.tencent.com",
+        },
+    )
+    if status not in (200, 201):
+        log("   🔥每日活跃: 上报失败 HTTP %s" % status)
+        return
+    try:
+        state[uid] = today
+        with open(state_file, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(state, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    except Exception as exc:
+        log("   🔥每日活跃: 本地去重状态保存失败 %s" % str(exc)[:50])
+    try:
+        data = (s.get("https://copilot.tencent.com/activity/growth/streak",
+                      timeout=20, verify=False).json().get("data") or {})
+        days = (data.get("streak") or {}).get("days")
+        if days in (None, 0):
+            log("   🔥每日活跃: 已上报，连登读数稍后刷新")
+        else:
+            log("   🔥每日活跃: 已点亮，连登 %s 天" % days)
+    except Exception:
+        log("   🔥每日活跃: 已上报")
+
+
 def t_sign(s, uid, nick, log):
     """每日签到 + 签到活动读数（连签天数 / 累计积分 / 连签奖励日）
 
@@ -1082,6 +1177,7 @@ def t_sign(s, uid, nick, log):
         log("   ✅签到成功 +%s积分%s" % (credit, tail))
     else:
         log("   ✅签到: %s%s" % (msg or "今天已签到，请明天再来", tail))
+    t_daily_activity(s, uid, nick, log)
 
 
 def t_accept_all(s, uid, nick, log):
@@ -2272,6 +2368,105 @@ def t_lighthouse(s, uid, nick, log):
     log("   腾讯轻量云专家: %s %s/%s" % (st, cur, tgt))
 
 
+VALORANT_EXPERT = {"id": "ex_xQHHD1u5Jkua", "name": "无畏契约拼豆专家", "version": "1.2.1"}
+
+
+def t_valorant(s, uid, nick, log):
+    """无畏契约拼豆专家：真实对话 + 专家召唤/使用桌面链。"""
+    st, cur, tgt = prog(s, "WorkBuddy_Valorant")
+    if st is None:
+        log("   无畏契约拼豆专家: 不在当前任务列表，跳过")
+        return
+    if st in ("completed", "claimed"):
+        log("   无畏契约拼豆专家: %s %s/%s" % (st, cur, tgt))
+        return
+    expert = dict(VALORANT_EXPERT)
+    try:
+        for item in get_normal_experts(20):
+            if (item.get("id") or "") == expert["id"] or "无畏契约" in (item.get("name") or ""):
+                expert["id"] = item.get("id") or expert["id"]
+                expert["name"] = item.get("name") or expert["name"]
+                expert["version"] = item.get("version") or expert["version"]
+                break
+    except Exception:
+        pass
+    prompt = "你好，请简单介绍一下无畏契约拼豆玩法，回答OK即可"
+    conv_id = ""
+    mid = ""
+    try:
+        growth_events = [{
+            "eventCode": "ExpertActualUse", "id": expert["id"],
+            "extra": {"name": expert["name"], "expertTitle": expert["name"],
+                      "expertType": "agent", "source": "builtin",
+                      "version": expert["version"], "cost": 0,
+                      "characterCount": len(prompt)},
+            "expertType": "agent",
+        }]
+        meta = {"codebuddy.ai": {
+            "growthEvent": json.dumps(growth_events, ensure_ascii=False),
+            "promptRequestId": str(uuid.uuid4()),
+            "clientSendTime": int(time.time() * 1000), "userId": uid,
+            "mode": "LOCAL", "model": "fast-model", "expertId": expert["id"],
+            "expert": {"id": expert["id"], "name": expert["name"], "prompt": prompt[:50]},
+            "tags": ["expert:" + expert["id"]],
+        }}
+        conv_id, _txt, mid = webchat2(s, "valorant", prompt, meta)
+    except Exception as exc:
+        log("   无畏契约拼豆专家: 对话异常 %s" % str(exc)[:50])
+    if conv_id and mid:
+        summon = [
+            {"eventCode": "expert_summon_click", "id": expert["id"], "name": expert["name"],
+             "expertTitle": expert["name"], "type": "agent", "expertType": "agent",
+             "source": "builtin", "mode": "LOCAL"},
+            {"eventCode": "expert_summoned", "id": expert["id"], "name": expert["name"],
+             "expertTitle": expert["name"], "type": "agent", "expertType": "agent",
+             "source": "builtin", "version": expert["version"], "mode": "LOCAL"},
+        ]
+        chain = desktop_chat_sequence(uid, nick, conv_id, mid, mid)
+        for event in chain:
+            if event.get("eventCode") == "agent_task_created":
+                event.update({"has_expert": True, "expert_id": expert["id"],
+                              "expert_name": expert["name"], "expert_industry_id": ""})
+        chain.append({
+            "eventCode": "expert_actual_use", "id": expert["id"], "name": expert["name"],
+            "expertTitle": expert["name"], "type": "", "expertType": "agent",
+            "source": "builtin", "version": expert["version"], "cost": 0,
+            "characterCount": len(prompt), "mode": "LOCAL",
+            "conversationId": conv_id, "requestId": mid, "messageId": mid,
+            "requestModelId": "fast-model", "requestModelName": "fast-model",
+        })
+        try:
+            report_desktop_events(s, uid, nick, summon + chain)
+        except Exception as exc:
+            log("   无畏契约拼豆专家: 桌面链上报失败 %s" % str(exc)[:50])
+        time.sleep(4)
+        status = prog(s, "WorkBuddy_Valorant")[0]
+        if status in ("completed", "claimed"):
+            st, cur, tgt = prog(s, "WorkBuddy_Valorant")
+            log("   无畏契约拼豆专家: %s %s/%s" % (st, cur, tgt))
+            return
+    try:
+        request_id = mid or str(uuid.uuid4())
+        conversation_id = conv_id or ("conv-" + str(uuid.uuid4()))
+        report(s, uid, nick, [
+            {"eventCode": "expert_summoned", "id": expert["id"], "name": expert["name"],
+             "type": "agent", "expertTitle": expert["name"], "expertType": "agent",
+             "source": "builtin", "timestamp": int(time.time() * 1000)},
+            {"eventCode": "expert_actual_use", "id": expert["id"], "name": expert["name"],
+             "expertTitle": expert["name"], "type": "agent", "expertType": "agent",
+             "source": "builtin", "version": expert["version"], "cost": 0,
+             "characterCount": len(prompt), "conversationId": conversation_id,
+             "requestId": request_id, "messageId": request_id,
+             "requestModelId": "fast-model", "requestModelName": "fast-model",
+             "userId": uid},
+        ])
+        time.sleep(3)
+    except Exception as exc:
+        log("   无畏契约拼豆专家: 失败 %s" % str(exc)[:60])
+    st, cur, tgt = prog(s, "WorkBuddy_Valorant")
+    log("   无畏契约拼豆专家: %s %s/%s" % (st, cur, tgt))
+
+
 MP_HEADER = {"X-Client-Platform": "miniprogram",
              "User-Agent": "Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 "
                            "MiniProgramEnv/android; wkbrowser xweb)"}
@@ -3084,6 +3279,7 @@ def run_account(idx, acc, do_desktop):
     _run("GLM-5.2/和AI聊天5次", ["Model_chat_GLM5.2", "chat_5"], lambda: t_glm52(s, uid, nick, log))
     _run("夜猫子", ["black_cat"], lambda: t_black_cat(s, uid, nick, log))
     _run("腾讯轻量云专家", ["Expert_lighthouse"], lambda: t_lighthouse(s, uid, nick, log))
+    _run("无畏契约拼豆专家", ["WorkBuddy_Valorant"], lambda: t_valorant(s, uid, nick, log))
     _run("小程序对话", ["Sequential_Tasks_1"], lambda: t_sequential_tasks(s, uid, nick, log))
     _run("小程序专家对话", ["Sequential_Tasks_2"], lambda: t_sequential_tasks_2(s, uid, nick, log))
     _run("小程序对话5次", ["Sequential_Tasks_3"], lambda: t_sequential_tasks_3(s, uid, nick, log))

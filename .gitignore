@@ -4,6 +4,7 @@ WORKBUDDY_ACCESS_TOKEN.txt
 wb_login_result.json
 wb_intl_login_result.json
 wb_intl_tokens.json
+workbuddy_activity_state.json
 *.log
 __pycache__/
 *.pyc
