@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.12
+🌱 WorkBuddy Daily - 全能签到脚本 v3.13
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -1467,7 +1467,7 @@ def t_glm52(s, uid, nick, log):
 
 
 
-# ---------- 互动玩法（移植自 workbuddy_checkin.py 验证代码） ----------
+# ---------- 互动玩法（经实测验证的成长中心链路） ----------
 def t_lottery(s, uid, nick, log):
     """抽奖：查剩余次数并全部抽完"""
     try:
@@ -1564,7 +1564,7 @@ def t_travel(s, uid, nick, log):
                 log("   🐾旅行: 🎉领取礼物 +%s积分" % rr.get("data", {}).get("reward_credit", 0))
             else:
                 log("   🐾旅行: 领取失败 %s" % str(rr.get("msg", ""))[:40])
-            return
+                return
         if state == "traveling":
             remain = max(0, (sd.get("arrive_at", 0) - sd.get("server_now", 0)) // 60)
             log("   🐾旅行: 旅行中，约%s分钟后到达" % remain)
@@ -3092,13 +3092,13 @@ def run_account(idx, acc, do_desktop):
     _run("小程序对话10次", ["Sequential_Tasks_6"], lambda: t_sequential_tasks_6(s, uid, nick, log))
     _run("小程序灵感功能", ["Sequential_Tasks_7"], lambda: t_sequential_tasks_7(s, uid, nick, log))
     _run("徽章", ["badges"], lambda: t_badges(s, uid, nick, log))
-    _run("抽奖", ["lottery"], lambda: t_lottery(s, uid, nick, log))
     _run("盲盒", ["blindbox"], lambda: t_blindbox(s, uid, nick, log))
     _run("Buddy 信息", ["buddy_info"], lambda: t_buddy_info(s, uid, nick, log))
     _run("派猫猫旅行", ["travel"], lambda: t_travel(s, uid, nick, log))
-    _run("连登兑换", ["redeem"], lambda: t_redeem(s, uid, nick, log, streak.get("days")))
-    _run("礼包/补偿", ["gift"], lambda: t_gift_compensation(s, uid, nick, log))
     _run("补签", ["makeup"], lambda: t_makeup(s, uid, nick, log))
+    _run("连登兑换", ["redeem"], lambda: t_redeem(s, uid, nick, log, streak.get("days")))
+    _run("抽奖", ["lottery"], lambda: t_lottery(s, uid, nick, log))
+    _run("礼包/补偿", ["gift"], lambda: t_gift_compensation(s, uid, nick, log))
     _run("工作台搭建师", ["workstation_expert"], lambda: t_workstation(s, uid, nick, log, tok))
     t_unknown_tasks(s, uid, nick, log)   # 未覆盖任务检测不受过滤影响
     # 领奖
