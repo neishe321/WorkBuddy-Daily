@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含（含国际版每日活跃）**
 
-🔐 Token 永续 · ✅ 33 项自动化 · 📱 小程序链式任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 34 项自动化 · 📱 小程序链式任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -20,7 +20,7 @@
 
 ## ✨ 这是什么
 
-一个脚本搞定 **WorkBuddy 成长中心 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 18 项云端任务 → 7 项小程序链式任务 → 8 项互动玩法 → 自动领奖 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
+一个脚本搞定 **WorkBuddy 成长中心 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 18 项云端任务 → 7 项小程序链式任务 → 8 项互动玩法 → 按进度自动补领 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
 >
 > 🗂️ **活动下线就归档**：已结束/已下架的任务（开学季活动、校园日、公益专家）不再占着主脚本，代码移到 [`archive/`](archive/) 留档，主脚本保持精简。
 
@@ -81,7 +81,7 @@ python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 >
 > 📌 官方规则是「**每天 1 次 × 累计 3 天**」，脚本有响应即停，不会一晚空跑多次。
 >
-> 📢 **通知**：面板里配了啥通知就用啥，连 webhook 都不用填 —— 青龙 2.18+ 配 `QL_CLIENT_ID` + `QL_CLIENT_SECRET`（面板「应用授权」，需 system 权限），旧版自动读 `auth.json`；也支持 PushPlus / Bark / WxPusher / 企业微信 / 钉钉五种 webhook 渠道。
+> 📢 **通知**：面板里配了啥通知就用啥，连 webhook 都不用填 —— 青龙 2.18+ 配 `QL_CLIENT_ID` + `QL_CLIENT_SECRET`（面板「应用授权」，需 system 权限），旧版自动读 `auth.json`；也支持 PushPlus / Bark / WxPusher / Server酱 / 企业微信 / 钉钉六种 webhook 渠道。
 
 ```bash
 # 依赖（仅一个）
@@ -105,6 +105,7 @@ pip3 install requests
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
 | `WXPUSHER_APP_TOKEN` | ⬜ | 可选，WxPusher 应用令牌（`AT_` 开头），在 wxpusher.zjiecode.com 创建应用后获得 |
 | `WXPUSHER_UID` | ⬜ | 可选，WxPusher 用户 UID（`UID_` 开头），多个用逗号/分号分隔 |
+| `SERVERCHAN_SENDKEY` | ⬜ | 可选，Server酱 微信推送（[官网](https://sct.ftqq.com) 免费获取，免费额度每天 5 条）。`sctp` 开头的是方糖专属通道，脚本会自动切到对应域名 |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人 webhook（或仅 key） |
 | `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人 webhook（安全设置：自定义关键词或加签） |
 | `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（机器人选「加签」时必填） |
@@ -114,6 +115,9 @@ pip3 install requests
 | `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，黑名单子任务（如 `lottery,redeem`） |
 | `WORKBUDDY_MP_GAP` | ⬜ | 可选，mp 对话事件间隔秒数（默认 `45`，调小可提速但可能被上游反作弊回滚） |
 | `WORKBUDDY_ACTIVITY_STATE` | ⬜ | 可选，每日活跃上报的本地去重文件路径 |
+| `WORKBUDDY_ACTIVITY_CHAT_FALLBACK` | ⬜ | 可选，合成活跃事件未点亮热力图时是否补一次真实对话（默认 `1`） |
+| `WORKBUDDY_BENEFIT_STATE` | ⬜ | 可选，补偿/礼包本地期次防重文件路径 |
+| `WORKBUDDY_MAKEUP_MAX_PER_RUN` | ⬜ | 可选，每轮最多补签几张（默认 `1`，最高 `10`） |
 
 > 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
 
@@ -295,6 +299,7 @@ python daily_forward.py daily.log --wx
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx`（自建服务器换域名即可） |
 | `WXPUSHER_APP_TOKEN` | ⬜ | 可选，WxPusher 应用令牌（`AT_` 开头），[官网](https://wxpusher.zjiecode.com) 创建应用后获得 |
 | `WXPUSHER_UID` | ⬜ | 可选，WxPusher 用户 UID（`UID_` 开头，扫码关注后查看），多个用逗号/分号分隔 |
+| `SERVERCHAN_SENDKEY` | ⬜ | 可选，Server酱 微信推送（[官网](https://sct.ftqq.com) 免费获取，免费额度每天 5 条）。`sctp` 开头的 SendKey 会自动走方糖专属通道 |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人。填完整 webhook URL，或只填 key（自动补全域名） |
 | `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人。安全设置选「自定义关键词」时，标题里带该词即可；选「加签」则再加 `DINGTALK_SECRET` |
 | `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（`SEC` 开头那串） |
@@ -304,6 +309,9 @@ python daily_forward.py daily.log --wx
 | `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，**黑名单**：跳过列出的子任务（与白名单可叠加，黑名单优先） |
 | `WORKBUDDY_MP_GAP` | ⬜ | 可选，mp 对话事件之间的间隔秒数（默认 `45`） |
 | `WORKBUDDY_ACTIVITY_STATE` | ⬜ | 可选，每日活跃上报的本地去重文件路径（默认 `workbuddy_activity_state.json`） |
+| `WORKBUDDY_ACTIVITY_CHAT_FALLBACK` | ⬜ | 可选，热力图仍为 0 时是否补一次真实对话（默认开启） |
+| `WORKBUDDY_BENEFIT_STATE` | ⬜ | 可选，补偿/礼包本地期次防重文件路径（默认 `workbuddy_benefit_state.json`） |
+| `WORKBUDDY_MAKEUP_MAX_PER_RUN` | ⬜ | 可选，每轮最多补签几张（默认 `1`，最高 `10`） |
 
 > 🎛️ **子任务开关怎么用？** 任务完成后领到的积分有**一个月有效期**，一次全领完容易放过期。
 >
@@ -416,16 +424,23 @@ python daily_forward.py daily.log --wx
 
 > 🔁 **连登管家**：固定按「补签 → 档位兑换 → 抽奖」执行，兑换新增的抽奖次数会在同一轮用完。
 >
-> 🐾 **猫猫旅行**：到达后领奖成功会继续检查状态，满足条件时当轮直接派出下一趟。
+> 🐾 **猫猫旅行**：到达后用服务端 `record_id` 领奖，回执含实际 `reward_credit` 才确认到账；领奖成功会继续检查状态，满足条件时当轮直接派出下一趟。
+>
+> 🩹 **补签日历**：使用服务端 `today`、活动上线日和当月边界选择断点，排除 `makeup_dates` 已补日期；默认每轮只补最近一张，补签后刷新连签再执行兑换。
+>
+> 🎊 **礼包/补偿**：先查 `active / claimed / credit_num`，再按领取回执里的 `credit` 判断本次实际到账；同一账号同一活动期写入本地防重状态，不再重复盲领。
 
 ### 🔹 其他
 
-每日签到（`/v2/billing/meter/daily-checkin`，独立于成长任务，自动完成）
+每日签到（先查 `/v2/billing/meter/checkin-activity-status`，活动期且今日未签时再调 `/v2/billing/meter/daily-checkin`）
 
-> 🔥 国内版签到后会补发一条 `chat_request_send` 活跃事件，用于点亮成长中心
-> 活跃连登与热力图；上报失败不影响签到结果。
+> 🔥 国内版签到后会补发一条 `chat_request_send` 活跃事件，并以成长热力图 `score > 0` 确认真正计分。HTTP 200 但当天仍为 0 时，默认补一次真实对话再回读；仍未计分则不写本地完成标记，下轮继续重试。
 >
 > 🎯 新增 `WorkBuddy_Valorant`：自动完成“无畏契约拼豆专家”召唤、真实对话和使用事件。
+>
+> 🎁 领奖按任务进度扫描，`progress.current >= progress.target` 即补领，不依赖可能延迟或回滚的 `accept_status`。
+>
+> ✅ 签到网络失败、空回执或业务错误不再打印成“签到成功”。企业形态仍按账号 `enterpriseId` 判定；`token_source` 只表示授权流程，不作为跳过任务的依据。
 
 ---
 
@@ -455,7 +470,7 @@ python daily_forward.py daily.log --wx
 - **⏰ 智能续期**：距上次刷新 > 10 天或 AT 7 天内过期才刷新，避免无谓轮换。
 - **🔄 API 重试**：网络错误 / 5xx 自动指数退避重试 3 次；`--gap` 可调写动作间隔防频控。
 - **🎛️ 子任务开关**：`WORKBUDDY_TASKS`（白名单）/ `WORKBUDDY_SKIP_TASKS`（黑名单）可自由裁剪要执行的子任务（含玩法），被跳过的任务不会被完成也不会被领奖——适合把积分分摊到后面几个月领。
-- **🔗 稳定设备指纹**：每账号 md5 派生固定 machineId/sessionId，桌面事件指纹与真实客户端对齐。
+- **🔗 稳定设备指纹**：每账号稳定派生 machineId/sessionId/qimei36；国内桌面 UA、版本、commit、releaseDate、CPU/内存与 5.8.3 真机口径对齐。
 - **📡 多域上报**：桌面域 + Web 域 + 小程序域三通道事件上报，完整覆盖所有任务类型。
 - **📋 进度感知**：只上报缺口数量的事件，不重复提交已完成的进度。
 - **✅ accept 双重校验**：解析接口逐任务状态 + 回读验证 + 未落账自动逐个重试（服务端存在「请求成功但未登记」的形态）。
@@ -468,11 +483,11 @@ python daily_forward.py daily.log --wx
 - **🛡️ 单账号隔离 + 凭据体检**：续期前先本地体检 RT/AT（`typ=Offline`、签发域 `codebuddy.cn`、三段式），把 `token format error` 翻译成「粘反了 / 粘错文件 / 被截断」；任一账号凭据失效或中途异常只跳过该账号，**不会中断整轮运行**。
 - **📦 活动下线就归档**：已结束/已下架的限时任务（开学季、校园日）不再常驻主脚本，代码移入 [`archive/`](archive/) 留档，主脚本只保留在跑的任务。
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
-- **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
-- **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族；指纹按**官方小程序源码**口径（`ideVersion/extVersion=2.2.8`、`android 14 / arm64`、`source=mini_program`），对话事件的 `conversationId` / `requestId` / `traceId` 同值传递。
+- **🎁 自动补领奖**：按 `progress.current >= progress.target` 扫描，已达标未领的任务会自动补领，不依赖可能延迟或回滚的 `accept_status`。
+- **📱 小程序协议对齐**：公共 base 使用 2.4.0，专家/灵感事件按官方发射点保留 2.2.8；`conversationId` 使用 UUID v4，`requestId` 使用 32 hex 毫秒前缀，不再携带项目缩写前缀。
 - **⏱️ mp 真人节奏 + accept 后回读**：对话判据逐条 45s±10s（对齐上游反作弊实测，避免「先计数后被整体回滚」）；accept 后重读真实 `target`，杜绝「少报 → 误判达标 → claim 400」。
 - **🔁 瞬时错误有界重试**：每日签到 / 余额 / 用量对网络抖动与 5xx 做 2s/4s 退避重试（最多 2 次），业务错误（如「今天已签到」）不重试。
-- **📢 五渠道推送**：PushPlus（微信）+ Bark（iOS）+ 企业微信群机器人 + 钉钉群机器人 + **青龙面板默认通知**，配了哪个推哪个，互不影响。
+- **📢 多渠道推送**：PushPlus、Bark、WxPusher、Server酱、企业微信、钉钉和**青龙面板默认通知**，配了哪个推哪个，互不影响。
   企业微信/钉钉只需一个 webhook；青龙用户连 webhook 都不用填——脚本自己从面板拿令牌调通知接口，**新版旧版都兼容**：
   · **青龙 2.18+**（不再写 auth.json）：配 `QL_CLIENT_ID` / `QL_CLIENT_SECRET`（应用授权，勾选 **system** 权限）→ `GET /open/auth/token` 换令牌 → `PUT /open/system/notify`；
   · **旧版**：`QL_TOKEN` 变量，或自动读 `$QL_DIR/config/auth.json`（2.18 前）/ `$QL_DIR/data/config/auth.json`（2.18 数据目录）里的 token → `/api/system/notify`（`/api/system/message` 也会试，鉴权头/查询参数都兼容）。
@@ -501,6 +516,8 @@ python daily_forward.py daily.log --wx
 | `wb_refresh_tokens.json` | 账号令牌库（RT / AT + 续期时间），**自动生成与维护** | ❌ 已屏蔽 |
 | `WORKBUDDY_ACCESS_TOKEN.txt` | 由令牌库重建的 AT 文件（`@` 分隔） | ❌ 已屏蔽 |
 | `wb_login_result.json` | `workbuddy_login.py` 登录结果（含真实 Token） | ❌ 已屏蔽 |
+| `workbuddy_activity_state.json` | 每日活跃上报本地去重状态 | ❌ 已屏蔽 |
+| `workbuddy_benefit_state.json` | 补偿/礼包活动期本地防重状态 | ❌ 已屏蔽 |
 | `_meta.json` / `_skillhub_meta.json` | 桌面端技能本地元数据（`~/.workbuddy/skills`） | 仅本机 |
 | `*.log` | 运行日志 | ❌ 已屏蔽 |
 

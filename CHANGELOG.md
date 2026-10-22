@@ -1,5 +1,28 @@
 # 更新日志
 
+## v3.16（2026-10-22）
+
+- 按 10-22 双版本真机抓包，清理任务上报体中的 `wb2api-*`、`wbmp-*`、`wb-daily-*` 等自证前缀。
+- 会话 ID 改为官方形态：`conversationId` 使用 UUID v4，`requestId` 使用 32 hex 毫秒前缀 ID；小程序/桌面合成事件同步修正。
+- 桌面指纹对齐国内版 5.8.3：更新 UA、ideVersion/extVersion、commit、releaseDate、osVersion、CPU 型号/核数和内存，并补 `qimei36`。
+- 桌面 `/v2/report` 的 `X-Domain` 改为裸主机名 `copilot.tencent.com`，`X-Request-ID` 改为官方 32 hex 形态。
+- 小程序公共 base 版本更新到 2.4.0；专家/灵感事件仍按官方发射点保留 2.2.8。
+- 每日活跃改为以热力图 `score > 0` 为成功判据；HTTP 200 不再直接写当天完成标记。未计分时默认补一次真实对话再回读，仍失败则下轮重试。
+- 签到业务码 `10001` 改为先回读 `today_checked_in`，只有状态确认已签才报成功。
+
+## v3.15（2026-10-21）
+
+- 领奖改为按 `progress.current >= progress.target` 扫描，修复任务已达标但 `accept_status` 尚未变为 `completed` 时永远不领的问题。
+- 桌面与小程序两种任务口径分别扫描、按 `task_code` 去重，并使用各自的领奖请求头。
+- 将 `WorkBuddy_Valorant` 纳入已知任务名称和未覆盖任务检测。
+- 签到改为先查活动状态，只在活动期且今日未签时领取；网络失败、空回执和业务错误不再写成签到成功。
+- 猫猫旅行领取改用状态回执里的 `record_id`，并以实际 `reward_credit` 确认到账。
+- 补签改用服务端日历、活动上线日和当月边界选日期，排除已补记录；默认每轮只补最近一张，补签后刷新连签再兑换。
+- 补偿和新手礼包增加先查后领、真实 `credit` 判定及本地期次防重，不再把可领额度冒充本次到账。
+- 企业形态仍以账号 `enterpriseId` 为准；后续真机 A/B 已证伪 `token_source=enterprise_switch` 代表企业上下文，因此不按该 JWT 声明跳过行为任务。
+- 新增 Server酱微信推送（`SERVERCHAN_SENDKEY`，含 `sctp` 方糖专属通道），由社区 PR #32 贡献。
+- 新增 6 项离线回归测试，覆盖进度补领、签到判定、旅行 `record_id`、补签候选、补偿本地防重和 Server酱地址解析。
+
 ## v3.14（2026-10-20）
 
 - 国内版每日签到后补发一条 `chat_request_send` 活跃事件，点亮成长中心活跃连登与热力图。
