@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.16
+🌱 WorkBuddy Daily - 全能签到脚本 v3.17
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -148,6 +148,7 @@
    · 企业形态以账号 enterpriseId 为准；token_source 只表示授权流程，不作为跳过任务依据
    · 会话 ID：conversationId 用 UUID v4，request/message ID 用 32 hex 毫秒前缀；不再上报项目缩写前缀
    · 官方指纹：CN 桌面 UA/版本/commit/releaseDate/cpu/内存对齐 5.8.3，并补 qimei36
+   · 网页会话收尾：真实对话完成即 stop，失败再 delete；撞 10105 时自动清理同前缀旧会话
    · 凭据失效隔离：AT/RT 过期或格式错只跳过该账号并给出排障提示，不再整轮崩溃
    · 子任务开关：WORKBUDDY_TASKS（白名单）/ WORKBUDDY_SKIP_TASKS（黑名单）——
      可只留签到+旅行，其余任务以后想做时再放开（积分一个月有效期，不需一次领完）
@@ -193,6 +194,9 @@ except Exception:
 
 BASE = "https://www.workbuddy.cn"
 CBDOMAIN = "https://www.codebuddy.cn"   # codebuddy 域（小程序埋点 / 技能市场 / 桌面任务）
+WEB_CONVERSATIONS_PATH = "/console/webchat/conversations"
+WEB_CONVERSATION_ACTIVE_STATUSES = ("working", "creating", "pending")
+WEB_CONVERSATION_PRUNE_KEEP = 8
 WORKBUDDY_UA_CN = "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"
 DESKTOP_VERSION_CN = "5.8.3"
 DESKTOP_COMMIT_CN = "db0e9b51b7fa0b383f41f5b0b83dd442c8557918"
@@ -954,28 +958,130 @@ def report(s, uid, nick, events, base=None, headers=None):
         return 0
 
 
+def _web_conversation_limit_hit(status, payload):
+    if status != 429 and (not isinstance(payload, dict)
+                          or payload.get("code") not in (10105, "10105")):
+        return False
+    try:
+        blob = json.dumps(payload, ensure_ascii=False).lower()
+    except Exception:
+        blob = str(payload).lower()
+    return ("10105" in blob
+            or "maximum number of active conversations" in blob)
+
+
+def _web_conversation_action(s, conversation_id, action):
+    """结束/删除网页会话；返回上游是否受理。清理失败不影响主流程。"""
+    if not conversation_id:
+        return False
+    try:
+        response = s.post(
+            BASE + WEB_CONVERSATIONS_PATH + "/"
+            + requests.utils.quote(str(conversation_id), safe="") + "/" + action,
+            json={}, timeout=15, verify=False)
+        payload = response.json() or {}
+        code = payload.get("code") if isinstance(payload, dict) else None
+        return 200 <= response.status_code < 300 and code in (0, None)
+    except Exception:
+        return False
+
+
+def _web_conversation_prune(s, prefix, keep=WEB_CONVERSATION_PRUNE_KEEP):
+    """撞到 10105 时，停掉同前缀的最旧活跃会话，最多保留 keep 条。"""
+    try:
+        response = s.get(
+            BASE + WEB_CONVERSATIONS_PATH,
+            params={"page": 1, "pageSize": 50},
+            timeout=20, verify=False)
+        payload = response.json() or {}
+        data = payload.get("data") if isinstance(payload, dict) else {}
+        rows = data.get("conversations") if isinstance(data, dict) else []
+    except Exception:
+        return 0
+    active = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "").lower()
+        name = str(row.get("name") or "")
+        if status not in WEB_CONVERSATION_ACTIVE_STATUSES:
+            continue
+        if prefix and not name.startswith(prefix + "-"):
+            continue
+        active.append(row)
+    if len(active) < 10:
+        return 0
+    active.sort(key=lambda row: str(row.get("createdAt") or ""))
+    stopped = 0
+    for row in active:
+        if len(active) - stopped <= keep:
+            break
+        if _web_conversation_action(s, row.get("id"), "stop"):
+            stopped += 1
+    return stopped
+
+
+def _web_conversation_release(s, conversation_id, delete=False):
+    stopped = _web_conversation_action(s, conversation_id, "stop")
+    if delete:
+        return _web_conversation_action(s, conversation_id, "delete") or stopped
+    return stopped
+
+
+def _web_conversation_create(s, conv_name):
+    body = {"name": conv_name + "-" + uuid.uuid4().hex[:8]}
+    try:
+        response = s.post(BASE + WEB_CONVERSATIONS_PATH, json=body,
+                          timeout=20, verify=False)
+        payload = response.json() or {}
+    except Exception:
+        return ""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    conversation_id = str(data.get("conversationId") or "") if isinstance(data, dict) else ""
+    if _web_conversation_limit_hit(response.status_code, payload):
+        freed = _web_conversation_prune(s, conv_name)
+        if freed:
+            try:
+                response = s.post(BASE + WEB_CONVERSATIONS_PATH, json=body,
+                                  timeout=20, verify=False)
+                payload = response.json() or {}
+                data = payload.get("data") if isinstance(payload, dict) else None
+                conversation_id = (str(data.get("conversationId") or "")
+                                   if isinstance(data, dict) else "")
+            except Exception:
+                return ""
+    code = payload.get("code") if isinstance(payload, dict) else None
+    if not (200 <= response.status_code < 300) or code not in (0, None):
+        return ""
+    return conversation_id
+
+
 def webchat2(s, conv_name, prompt, meta=None, model="glm-5.2"):
     """真实对话：返回 (conversationId, 回复正文, 服务端消息id)。
 
     服务端消息 id 取 SSE 首块的 "id"（形如 cmb-<32hex>）——上游 panel 实测：专家/技能类
     任务的 requestId / messageId 必须是真实会话的服务端 id，自造 uuid 不计数。
     """
-    conv = s.post(BASE + "/console/webchat/conversations", json={"name": conv_name + "-" + str(uuid.uuid4())[:8]},
-                  timeout=20, verify=False).json()
-    conv_id = conv.get("data", {}).get("conversationId", "")
+    conv_id = _web_conversation_create(s, conv_name)
+    if not conv_id:
+        return "", "", ""
     payload = {"messages": [{"role": "user", "content": prompt}], "model": model, "stream": True,
                "conversationId": conv_id}
     if meta:
         payload["_meta"] = meta
     headers = dict(s.headers); headers["Accept"] = "text/event-stream"
     txt = ""; srv_mid = ""
+    finished = False
     try:
         with s.post(BASE + "/console/chat/completions", json=payload, timeout=90, verify=False,
                     stream=True, headers=headers) as r:
+            if not (200 <= r.status_code < 300):
+                return conv_id, txt, srv_mid
             for line in r.iter_lines(decode_unicode=True):
                 if line and line.startswith("data: "):
                     d = line[6:]
                     if d.strip() in ("[DONE]", "[完成]", "[✅完成]"):
+                        finished = True
                         break
                     try:
                         jj = json.loads(d)
@@ -989,6 +1095,11 @@ def webchat2(s, conv_name, prompt, meta=None, model="glm-5.2"):
                         pass
     except Exception:
         pass
+    else:
+        finished = finished or bool(txt or srv_mid)
+    finally:
+        # 网页会话占用上游活跃名额；无论成功失败都必须收尾。
+        _web_conversation_release(s, conv_id, delete=not finished)
     return conv_id, txt, srv_mid
 
 

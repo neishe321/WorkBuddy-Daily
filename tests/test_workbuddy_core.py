@@ -12,6 +12,8 @@ import unittest
 import uuid
 from pathlib import Path
 
+import requests
+
 
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "workbuddy_daily.py"
 SOURCE = SOURCE_PATH.read_text(encoding="utf-8")
@@ -38,6 +40,21 @@ class FakeResponse:
 
     def json(self):
         return self.payload
+
+
+class FakeStreamResponse(FakeResponse):
+    def __init__(self, status_code=200, payload=None, lines=None):
+        super().__init__(status_code, payload)
+        self.lines = list(lines or [])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def iter_lines(self, decode_unicode=False):
+        yield from self.lines
 
 
 class FakeSession:
@@ -202,6 +219,99 @@ class CoreBehaviorTests(unittest.TestCase):
                       if call[1].endswith("/buddy/travel/claim")][0]
         self.assertEqual({"record_id": "record-42"}, claim_call[2]["json"])
         self.assertIn("+30积分", " ".join(logs))
+
+    def test_webchat_success_stops_and_failure_deletes(self):
+        module = load_functions(
+            "_web_conversation_limit_hit", "_web_conversation_action",
+            "_web_conversation_prune", "_web_conversation_release",
+            "_web_conversation_create", "webchat2",
+            BASE="https://example.test",
+            WEB_CONVERSATIONS_PATH="/console/webchat/conversations",
+            WEB_CONVERSATION_ACTIVE_STATUSES=("working", "creating", "pending"),
+            WEB_CONVERSATION_PRUNE_KEEP=8,
+            requests=requests, json=json, uuid=uuid,
+        )
+
+        class Session:
+            def __init__(self, chat_status, lines):
+                self.chat_status = chat_status
+                self.lines = lines
+                self.headers = {}
+                self.calls = []
+                self.create_count = 0
+
+            def post(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                if url.endswith("/console/webchat/conversations"):
+                    self.create_count += 1
+                    return FakeResponse(
+                        payload={"code": 0, "data": {"conversationId": "conv-1"}})
+                if url.endswith("/chat/completions"):
+                    return FakeStreamResponse(self.chat_status, lines=self.lines)
+                return FakeResponse(payload={"code": 0, "data": {}})
+
+        success = Session(
+            200,
+            ['data: {"id":"cmb-1","choices":[{"delta":{"content":"OK"}}]}',
+             "data: [DONE]"],
+        )
+        conv_id, text, message_id = module["webchat2"](
+            success, "activity", "你好")
+        self.assertEqual(("conv-1", "OK", "cmb-1"), (conv_id, text, message_id))
+        urls = [url for url, _ in success.calls]
+        self.assertTrue(any(url.endswith("/conv-1/stop") for url in urls))
+        self.assertFalse(any(url.endswith("/conv-1/delete") for url in urls))
+
+        failed = Session(500, [])
+        module["webchat2"](failed, "activity", "你好")
+        urls = [url for url, _ in failed.calls]
+        self.assertTrue(any(url.endswith("/conv-1/stop") for url in urls))
+        self.assertTrue(any(url.endswith("/conv-1/delete") for url in urls))
+
+    def test_web_conversation_limit_prunes_and_retries_create(self):
+        class Session:
+            def __init__(self):
+                self.create_count = 0
+                self.stops = []
+
+            def get(self, url, **kwargs):
+                rows = [{
+                    "id": "old-%02d" % i,
+                    "name": "activity-%08x" % i,
+                    "status": "working",
+                    "createdAt": "2026-10-22T10:%02d:00+08:00" % i,
+                } for i in range(10)]
+                return FakeResponse(payload={"data": {"conversations": rows}})
+
+            def post(self, url, **kwargs):
+                if url.endswith("/conversations"):
+                    self.create_count += 1
+                    if self.create_count == 1:
+                        return FakeResponse(
+                            429, {"code": 10105,
+                                  "msg": "maximum number of active conversations(10)"})
+                    return FakeResponse(
+                        payload={"code": 0, "data": {"conversationId": "new-conv"}})
+                if url.endswith("/stop"):
+                    self.stops.append(url)
+                    return FakeResponse(payload={"code": 0, "data": {}})
+                return FakeResponse(payload={"code": 0, "data": {}})
+
+        module = load_functions(
+            "_web_conversation_limit_hit", "_web_conversation_action",
+            "_web_conversation_prune", "_web_conversation_create",
+            BASE="https://example.test",
+            WEB_CONVERSATIONS_PATH="/console/webchat/conversations",
+            WEB_CONVERSATION_ACTIVE_STATUSES=("working", "creating", "pending"),
+            WEB_CONVERSATION_PRUNE_KEEP=8,
+            requests=requests, json=json, uuid=uuid,
+        )
+        session = Session()
+        conv_id = module["_web_conversation_create"](session, "activity")
+        self.assertEqual("new-conv", conv_id)
+        self.assertEqual(2, session.create_count)
+        self.assertEqual(2, len(session.stops))
+        self.assertTrue(session.stops[0].endswith("/old-00/stop"))
 
     def test_makeup_candidates_use_server_calendar_and_exclude_made_up_dates(self):
         module = load_functions("_dig", "_makeup_candidates", re=re, math=math)
