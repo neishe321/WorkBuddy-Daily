@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.17
+🌱 WorkBuddy Daily - 全能签到脚本 v3.21
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
    一个脚本搞定 WorkBuddy 全部自动化：Token 自动续期、积分/用量查询、
-   18 项成长任务、8 项互动玩法、小程序成长任务、
+   22 项成长任务、8 项互动玩法、小程序成长任务、
    自动领奖，全部无人值守。
 
 ✨ 特性
    🔐 Token 永续     只配一个刷新令牌变量，脚本自动续期（90 天滚动，永不过期）
-   ✅ 成长任务       17 项云端任务全覆盖（含轻量云专家；小程序链式见下一行）
+   ✅ 成长任务       22 项云端任务全覆盖（含专家体验任务；小程序链式见下一行）
    📱 小程序任务     Tasks_1~7 链式任务（每日零点解锁一环，日志给出解锁日期）
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
@@ -101,11 +101,12 @@
    ⚠️ RT 是你唯一的续期凭据，泄露了别人就能操作你的账号
 
 📦 任务清单
-   ☁️ 成长中心任务（17 项，云端 + 桌面）
+   ☁️ 成长中心任务（22 项，云端 + 桌面）
       每日签到 · 设计创意模式 · 探索优秀灵感 · 桌面端对话 · 尝鲜热门技能
       体验资料库 · 腾讯轻量云专家 · 和平精英主题 · 发现应用 · 企鹅教师助手
       GLM-5.2模型对话 · 和AI聊天5次 · 夜猫子活动 · 召唤3次专家团 · 召唤5次专家
-      使用5个模板 · 设置自动化任务 · 领取Buddy
+      使用5个模板 · 设置自动化任务 · 领取Buddy · 无畏契约拼豆专家
+      中国电商运营专家 · 抖音策略师 · 商家宣传页与海报设计师 · 直播电商教练
    📱 小程序成长任务（7 项，需 X-Client-Platform: miniprogram 头）
       Sequential_Tasks_1 完成 1 次对话（+100c+5e）
       Sequential_Tasks_2 选中专家并完成对话（+200c+5e）
@@ -128,7 +129,9 @@
    · 桌面任务：Windows 走真实桌面换血；非 Windows 自动降级为指纹上报（无需真实桌面端）
    · 夜猫子：官方规则为「每日 1 次 × 累计 3 天」，有响应即停，不空跑
    · accept 校验：解析接口逐任务状态 + 回读验证，未落账的自动逐个重试
-   · 进度补领：桌面与小程序任务都按 progress 达标补领，不依赖会延迟/回滚的 accept_status
+   · 进度补领：任务动作前先预扫一次，全部完成后再次清扫；桌面与小程序都按 progress
+   · 任务发现：合并桌面 /v2、小程序 /v2、等级族无 /v2 三套清单，不假设互为超集
+     达标补领，不依赖会延迟/回滚的 accept_status
    · 签到判定：先查 activity-status，仅在活动期且今日未签时领取；空回执不再写成成功
    · 前置依赖：accept 报 prerequisite not met 时先补跑前置任务（如先领养首只 Buddy）再重试
    · 真实会话 id：专家/技能任务的 requestId/messageId 取自真实对话的服务端消息 id（cmb- 形态）
@@ -176,6 +179,7 @@
    脚本不含任何账号、手机号、Token 或设备信息，所有凭据均由环境变量注入。
 """
 import sys, os, re, json, math, time, uuid, base64, glob, hashlib, hmac, glob as _glob, shutil, subprocess, threading, queue
+from urllib.parse import parse_qs, urlparse
 import requests
 
 
@@ -225,6 +229,10 @@ TASK_NAME_CN = {
     "automation_1": "设置自动化任务",
     "workstation_expert": "工作台搭建师",
     "WorkBuddy_Valorant": "无畏契约拼豆专家",
+    "expert_use_maidehao": "中国电商运营专家",
+    "expert_use_douyinyin": "抖音策略师",
+    "expert_use_shangjia_xuanchuan": "商家宣传页与海报设计师",
+    "expert_use_bowangwang": "直播电商教练",
     "wb_wechat_oa_subscribe_task": "关注公众号",
     "Sequential_Tasks_1": "小程序对话",
     "Sequential_Tasks_2": "小程序专家对话",
@@ -242,8 +250,101 @@ MP_TASK_CODES = {
     "Sequential_Tasks_7", "school_season",
 }
 
+EXPERT_TASK_SPECS = {
+    "expert_use_maidehao": {
+        "id": "ex_GDl31WahyIH0",
+        "name": "卖得好",
+        "profession": "中国电商运营专家",
+        "version": "1.0.1",
+        "slug": "maidehao",
+    },
+    "expert_use_douyinyin": {
+        "id": "ex_FbY5nlWTqDod",
+        "name": "斗音音",
+        "profession": "抖音策略师",
+        "version": "1.0.2",
+        "slug": "douyinyin",
+    },
+    "expert_use_shangjia_xuanchuan": {
+        "id": "ex_Weo3x2EZuSDm",
+        "name": "商家宣传设计师",
+        "profession": "商家宣传页与海报设计师",
+        "version": "1.6.0",
+        "slug": "shangjia-xuanchuan",
+    },
+    "expert_use_bowangwang": {
+        "id": "ex_WZY136wV5aMt",
+        "name": "播旺旺",
+        "profession": "直播电商教练",
+        "version": "1.0.2",
+        "slug": "bowangwang",
+    },
+}
+DESKTOP_ONLY_TASK_CODES = frozenset(EXPERT_TASK_SPECS) | {
+    "Expert_lighthouse", "WorkBuddy_Valorant",
+}
+LEVEL_TASK_CODES = {
+    "first_chat", "skill_installed", "wechat_linked",
+    "expert_summoned", "template_used",
+}
+_EXPERT_ID_RE = re.compile(r"^ex_[A-Za-z0-9]{6,64}$")
+_TRUSTED_JUMP_HOST_SUFFIXES = ("workbuddy.cn", "codebuddy.cn", "tencent.com")
+
+
 def task_cn(code):
     return TASK_NAME_CN.get(code, code)
+
+
+def _parse_expert_deeplink(value):
+    """只接受 workbuddy://experts?expertId=ex_xxx 这一种专家深链。"""
+    try:
+        parsed = urlparse(value)
+        if parsed.scheme.lower() != "workbuddy":
+            return ""
+        if parsed.netloc.lower() != "experts" or parsed.path not in ("", "/"):
+            return ""
+        if parsed.fragment:
+            return ""
+        ids = parse_qs(parsed.query, keep_blank_values=True).get("expertId", [])
+        unique = {item.strip() for item in ids if item.strip()}
+        if len(ids) != 1 or len(unique) != 1:
+            return ""
+        expert_id = unique.pop()
+        return expert_id if _EXPERT_ID_RE.fullmatch(expert_id) else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _expert_id_from_jump_url(jump_url):
+    """从任务 jump_url 的 deeplink 参数提取专家 ID，不接受任意 URL 内嵌值。"""
+    if not isinstance(jump_url, str):
+        return ""
+    raw = jump_url.strip()
+    if not raw:
+        return ""
+    direct = _parse_expert_deeplink(raw)
+    if direct:
+        return direct
+    if raw.lower().startswith("deeplink="):
+        deeplinks = parse_qs(raw, keep_blank_values=True).get("deeplink", [])
+        if len(deeplinks) == 1:
+            return _parse_expert_deeplink(deeplinks[0])
+        return ""
+    try:
+        outer = urlparse(raw)
+        if outer.scheme.lower() not in ("http", "https", "workbuddy") or outer.fragment:
+            return ""
+        if outer.scheme.lower() in ("http", "https"):
+            host = (outer.hostname or "").rstrip(".").lower()
+            if not any(host == suffix or host.endswith("." + suffix)
+                       for suffix in _TRUSTED_JUMP_HOST_SUFFIXES):
+                return ""
+        deeplinks = parse_qs(outer.query, keep_blank_values=True).get("deeplink", [])
+        if len(deeplinks) != 1:
+            return ""
+        return _parse_expert_deeplink(deeplinks[0])
+    except (TypeError, ValueError):
+        return ""
 
 
 def _as_int(value, default=0):
@@ -354,6 +455,7 @@ def get_normal_experts(count=10):
             normal.append({"id": e["id"], "name": _extract_name(e.get("displayName", e.get("name", {}))),
                            "industryId": meta.get("industryId", e.get("industryId", "")),
                            "profession": _extract_name(e.get("profession", "")),
+                           "version": e.get("version") or meta.get("version", ""),
                            "defaultInitPrompt": _extract_name(e.get("defaultInitPrompt", ""))})
     return normal[:count]
 
@@ -852,6 +954,8 @@ def api_retry(s, method, url, body=None, retries=3, gap=1.0, **kw):
 
 def interpret_failure(st, r_json):
     """结构化错误分类：返回 (描述, 是否应跳过该账号)。"""
+    if is_account_restricted(st, r_json):
+        return "11140 账号受限", True
     code = r_json.get("code") if isinstance(r_json, dict) else None
     msg = str(r_json.get("msg", "") or r_json.get("message", ""))[:120] if isinstance(r_json, dict) else str(r_json)[:80]
     if st == 401 or code in (401, "401", 40100, "40100"):
@@ -863,6 +967,23 @@ def interpret_failure(st, r_json):
     if code in (40901, "40901"):
         return "40901 任务暂不可领取", False
     return "http=%s code=%s %s" % (st, code, msg), False
+
+
+def is_account_restricted(status_code, payload):
+    """WorkBuddy 账号级风控：11140 / request illegal，不得当成登录态过期。"""
+    code = payload.get("code") if isinstance(payload, dict) else None
+    blob = (
+        json.dumps(payload, ensure_ascii=False)
+        if isinstance(payload, (dict, list))
+        else str(payload or "")
+    ).lower()
+    if code in (11140, "11140"):
+        return True
+    markers = (
+        "11140", "account restricted", "request illegal",
+        "账号受限", "账号被限制", "账户受限",
+    )
+    return int(status_code or 0) == 403 and any(marker in blob for marker in markers)
 
 
 def uid_of(tok):
@@ -889,6 +1010,110 @@ def prog(s, code):
     except Exception:
         pass
     return None, None, None
+
+
+def _growth_task_rows(s, headers=None, path="/v2/activity/growth/tasks"):
+    """读取一份成长任务原始行；单源失败返回空列表。"""
+    try:
+        payload = s.get(BASE + path, timeout=25,
+                        verify=False, headers=headers).json() or {}
+        rows = (payload.get("data") or {}).get("tasks", [])
+        return [task for task in rows if isinstance(task, dict)]
+    except Exception:
+        return []
+
+
+def _growth_task_row(s, code):
+    """桌面成长任务原始行（含 jump_url / valid_end 等字段）；未下发返回 None。"""
+    for task in _growth_task_rows(s):
+        if task.get("task_code") == code or task.get("code") == code:
+            return task
+    return None
+
+
+def _expert_spec_for_task(s, code):
+    """返回内置专家定义；合法任务 jump_url 中的新 ID 优先于静态兜底。"""
+    stored = EXPERT_TASK_SPECS.get(code)
+    if not stored and not str(code).startswith("expert_use_"):
+        return {}
+    row = _growth_task_row(s, code) or {}
+    title = str(
+        row.get("title") or row.get("task_title") or row.get("task_name")
+        or TASK_NAME_CN.get(code) or code)
+    spec = dict(stored or {
+        "id": "",
+        "name": "",
+        "profession": title,
+        "version": "",
+        "slug": str(code),
+    })
+    dynamic_id = _expert_id_from_jump_url(row.get("jump_url"))
+    if dynamic_id:
+        spec["id"] = dynamic_id
+    return spec
+
+
+def _dynamic_expert_task_codes(s):
+    """发现桌面任务列表里的 expert_use_* 族任务，静态四条只是已审核兜底。"""
+    return sorted({
+        str(task.get("task_code") or task.get("code") or "").strip()
+        for task in _growth_task_rows(s)
+        if str(task.get("task_code") or task.get("code") or "").startswith("expert_use_")
+    })
+
+
+def _market_expert_by_id(s, keyword, expected_id):
+    """分页搜索专家市场，按 expert_id 精确落位；无 ID 时只接受唯一同名结果。"""
+    keyword = str(keyword or "").strip()
+    expected_id = str(expected_id or "").strip()
+    if not keyword:
+        return None
+    if expected_id and not _EXPERT_ID_RE.fullmatch(expected_id):
+        return None
+    candidates = {}
+    for page in range(1, 4):
+        try:
+            response = api_retry(
+                s, "POST", CBDOMAIN + "/v2/operation-platform/market/expert/list",
+                body={"page": page, "page_size": 20, "keyword": keyword},
+            )
+            data = response.json().get("data") or {}
+            rows = data.get("experts") or data.get("items") or []
+        except Exception:
+            break
+        if not rows:
+            break
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            expert_id = str(
+                row.get("expert_id") or row.get("source_id") or row.get("id") or "")
+            if not _EXPERT_ID_RE.fullmatch(expert_id):
+                continue
+            display = _extract_name(
+                row.get("display_name_zh") or row.get("displayName")
+                or row.get("name") or "")
+            profession = _extract_name(
+                row.get("profession_zh") or row.get("profession") or "")
+            version = row.get("version")
+            if not version:
+                meta = row.get("_meta") or {}
+                version = meta.get("version") if isinstance(meta, dict) else ""
+            candidate = {
+                "id": expert_id,
+                "name": display or expert_id,
+                "profession": profession or keyword,
+                "version": str(version or ""),
+            }
+            if expected_id and expert_id == expected_id:
+                return candidate
+            if not expected_id and keyword in (display, profession):
+                candidates[expert_id] = candidate
+        if len(rows) < 20:
+            break
+    if not expected_id and len(candidates) == 1:
+        return next(iter(candidates.values()))
+    return None
 
 
 def _claim_response_ok(response, payload):
@@ -1509,8 +1734,13 @@ def t_accept_all(s, uid, nick, log):
     ⚠️ 部分任务带前置条件：message 为 `prerequisite not met: <task_code>`（如 first_buddy
        表示该账号还没有 Buddy 实例），此时先补跑前置任务再重试登记。
     """
-    r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
-    todo = [t.get("task_code") for t in r.get("data", {}).get("tasks", [])
+    try:
+        r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
+        rows = (r.get("data") or {}).get("tasks") or []
+    except Exception as e:
+        log("   📋批量接受读取任务失败: %s" % str(e)[:60])
+        return
+    todo = [t.get("task_code") for t in rows
             if isinstance(t, dict) and t.get("accept_status") == "not_accepted"]
     if not todo:
         return
@@ -2935,32 +3165,49 @@ def t_lighthouse(s, uid, nick, log):
 VALORANT_EXPERT = {"id": "ex_xQHHD1u5Jkua", "name": "无畏契约拼豆专家", "version": "1.2.1"}
 
 
-def t_valorant(s, uid, nick, log):
-    """无畏契约拼豆专家：真实对话 + 专家召唤/使用桌面链。"""
-    st, cur, tgt = prog(s, "WorkBuddy_Valorant")
+def _run_local_expert_task(s, uid, nick, log, task_code, expert, conv_name="expert"):
+    """LOCAL 专家任务共用链：真实对话 + 召唤 + actual_use(mode:LOCAL)。"""
+    label = expert.get("profession") or expert.get("name") or task_code
+    st, cur, tgt = prog(s, task_code)
     if st is None:
-        log("   无畏契约拼豆专家: 不在当前任务列表，跳过")
+        log("   %s: 不在当前任务列表，跳过" % label)
         return
     if st in ("completed", "claimed"):
-        log("   无畏契约拼豆专家: %s %s/%s" % (st, cur, tgt))
+        log("   %s: %s %s/%s" % (label, st, cur, tgt))
         return
-    expert = dict(VALORANT_EXPERT)
+    expert = dict(expert)
+    if expert.get("id") and not _EXPERT_ID_RE.fullmatch(str(expert.get("id") or "")):
+        log("   %s: 专家 ID 格式无效，跳过" % label)
+        return
+    profession = expert.get("profession") or expert.get("name") or task_code
     try:
-        for item in get_normal_experts(20):
-            if (item.get("id") or "") == expert["id"] or "无畏契约" in (item.get("name") or ""):
-                expert["id"] = item.get("id") or expert["id"]
-                expert["name"] = item.get("name") or expert["name"]
-                expert["version"] = item.get("version") or expert["version"]
-                break
+        market = _market_expert_by_id(s, profession, expert.get("id", ""))
+        if market:
+            expert.update(market)
+        else:
+            for item in get_normal_experts(100):
+                if (item.get("id") or "") == expert["id"]:
+                    expert["id"] = item.get("id") or expert["id"]
+                    expert["name"] = item.get("name") or expert["name"]
+                    expert["profession"] = (
+                        item.get("profession") or expert.get("profession") or profession)
+                    expert["version"] = item.get("version") or expert["version"]
+                    break
     except Exception:
         pass
-    prompt = "你好，请简单介绍一下无畏契约拼豆玩法，回答OK即可"
+    if not _EXPERT_ID_RE.fullmatch(str(expert.get("id") or "")):
+        log("   %s: 专家市场返回了无效 ID，跳过" % label)
+        return
+    display_name = expert.get("name") or expert["id"]
+    expert_title = expert.get("profession") or profession
+    label = expert_title
+    prompt = "你好，请简单介绍一下%s，回答OK即可" % expert_title
     conv_id = ""
     mid = ""
     try:
         growth_events = [{
             "eventCode": "ExpertActualUse", "id": expert["id"],
-            "extra": {"name": expert["name"], "expertTitle": expert["name"],
+            "extra": {"name": display_name, "expertTitle": expert_title,
                       "expertType": "agent", "source": "builtin",
                       "version": expert["version"], "cost": 0,
                       "characterCount": len(prompt)},
@@ -2971,29 +3218,29 @@ def t_valorant(s, uid, nick, log):
             "promptRequestId": str(uuid.uuid4()),
             "clientSendTime": int(time.time() * 1000), "userId": uid,
             "mode": "LOCAL", "model": "fast-model", "expertId": expert["id"],
-            "expert": {"id": expert["id"], "name": expert["name"], "prompt": prompt[:50]},
+            "expert": {"id": expert["id"], "name": display_name, "prompt": prompt[:50]},
             "tags": ["expert:" + expert["id"]],
         }}
-        conv_id, _txt, mid = webchat2(s, "valorant", prompt, meta)
+        conv_id, _txt, mid = webchat2(s, conv_name, prompt, meta)
     except Exception as exc:
-        log("   无畏契约拼豆专家: 对话异常 %s" % str(exc)[:50])
+        log("   %s: 对话异常 %s" % (label, str(exc)[:50]))
     if conv_id and mid:
         summon = [
-            {"eventCode": "expert_summon_click", "id": expert["id"], "name": expert["name"],
-             "expertTitle": expert["name"], "type": "agent", "expertType": "agent",
+            {"eventCode": "expert_summon_click", "id": expert["id"], "name": display_name,
+             "expertTitle": expert_title, "type": "agent", "expertType": "agent",
              "source": "builtin", "mode": "LOCAL"},
-            {"eventCode": "expert_summoned", "id": expert["id"], "name": expert["name"],
-             "expertTitle": expert["name"], "type": "agent", "expertType": "agent",
+            {"eventCode": "expert_summoned", "id": expert["id"], "name": display_name,
+             "expertTitle": expert_title, "type": "agent", "expertType": "agent",
              "source": "builtin", "version": expert["version"], "mode": "LOCAL"},
         ]
         chain = desktop_chat_sequence(uid, nick, conv_id, mid, mid)
         for event in chain:
             if event.get("eventCode") == "agent_task_created":
                 event.update({"has_expert": True, "expert_id": expert["id"],
-                              "expert_name": expert["name"], "expert_industry_id": ""})
+                              "expert_name": display_name, "expert_industry_id": ""})
         chain.append({
-            "eventCode": "expert_actual_use", "id": expert["id"], "name": expert["name"],
-            "expertTitle": expert["name"], "type": "", "expertType": "agent",
+            "eventCode": "expert_actual_use", "id": expert["id"], "name": display_name,
+            "expertTitle": expert_title, "type": "", "expertType": "agent",
             "source": "builtin", "version": expert["version"], "cost": 0,
             "characterCount": len(prompt), "mode": "LOCAL",
             "conversationId": conv_id, "requestId": mid, "messageId": mid,
@@ -3002,33 +3249,52 @@ def t_valorant(s, uid, nick, log):
         try:
             report_desktop_events(s, uid, nick, summon + chain)
         except Exception as exc:
-            log("   无畏契约拼豆专家: 桌面链上报失败 %s" % str(exc)[:50])
+            log("   %s: 桌面链上报失败 %s" % (label, str(exc)[:50]))
         time.sleep(4)
-        status = prog(s, "WorkBuddy_Valorant")[0]
+        status = prog(s, task_code)[0]
         if status in ("completed", "claimed"):
-            st, cur, tgt = prog(s, "WorkBuddy_Valorant")
-            log("   无畏契约拼豆专家: %s %s/%s" % (st, cur, tgt))
+            st, cur, tgt = prog(s, task_code)
+            log("   %s: %s %s/%s" % (label, st, cur, tgt))
             return
     try:
         request_id = mid or _new_message_id()
         conversation_id = conv_id or _new_conversation_id()
         report(s, uid, nick, [
-            {"eventCode": "expert_summoned", "id": expert["id"], "name": expert["name"],
-             "type": "agent", "expertTitle": expert["name"], "expertType": "agent",
+            {"eventCode": "expert_summoned", "id": expert["id"], "name": display_name,
+             "type": "agent", "expertTitle": expert_title, "expertType": "agent",
              "source": "builtin", "timestamp": int(time.time() * 1000)},
-            {"eventCode": "expert_actual_use", "id": expert["id"], "name": expert["name"],
-             "expertTitle": expert["name"], "type": "agent", "expertType": "agent",
+            {"eventCode": "expert_actual_use", "id": expert["id"], "name": display_name,
+             "expertTitle": expert_title, "type": "", "expertType": "agent",
              "source": "builtin", "version": expert["version"], "cost": 0,
-             "characterCount": len(prompt), "conversationId": conversation_id,
+             "characterCount": len(prompt), "mode": "LOCAL",
+             "conversationId": conversation_id,
              "requestId": request_id, "messageId": request_id,
              "requestModelId": "fast-model", "requestModelName": "fast-model",
              "userId": uid},
         ])
         time.sleep(3)
     except Exception as exc:
-        log("   无畏契约拼豆专家: 失败 %s" % str(exc)[:60])
-    st, cur, tgt = prog(s, "WorkBuddy_Valorant")
-    log("   无畏契约拼豆专家: %s %s/%s" % (st, cur, tgt))
+        log("   %s: 失败 %s" % (label, str(exc)[:60]))
+    st, cur, tgt = prog(s, task_code)
+    log("   %s: %s %s/%s" % (label, st, cur, tgt))
+
+
+def t_valorant(s, uid, nick, log):
+    """无畏契约拼豆专家：真实对话 + 专家召唤/使用桌面链。"""
+    expert = dict(VALORANT_EXPERT)
+    _run_local_expert_task(
+        s, uid, nick, log, "WorkBuddy_Valorant", expert, conv_name="valorant")
+
+
+def t_expert_use_task(s, uid, nick, log, task_code):
+    """新增 expert_use 任务：内置 ID 兜底，任务 jump_url 可安全覆盖专家 ID。"""
+    expert = _expert_spec_for_task(s, task_code)
+    if not expert:
+        log("   %s: 缺少专家任务配置，跳过" % task_code)
+        return
+    _run_local_expert_task(
+        s, uid, nick, log, task_code, expert,
+        conv_name="expert-" + str(expert.get("slug") or "task"))
 
 
 MP_HEADER = {"X-Client-Platform": "miniprogram",
@@ -3462,34 +3728,71 @@ def t_sequential_tasks_7(s, uid, nick, log):
 
 
 def t_unknown_tasks(s, uid, nick, log):
-    """任务列表体检：未覆盖的新任务提示 + 未完成任务的有效期预警
+    """任务列表体检：动态发现新任务 + 未完成任务的有效期预警
 
     服务端任务行带 valid_start / valid_end（如 Buddy_App_QQ 至 2026-10-10）——
     过期后就领不到了，所以对「未完成且 7 天内到期 / 已过期」的任务给出 ⏰ 提示。
+    桌面 /v2、小程序 /v2、等级族无 /v2 三源并不互为超集，合并后按 code 去重；
+    单侧失败不阻断另一侧或后续补领。
     """
     known = {"create_canvas", "playbook_prompt", "RichMeow_Chat", "Library_read", "Expert_lighthouse",
              "Expert_Philanthropy", "Hp_Appearance", "Buddy_App", "Buddy_App_QQ", "Model_chat_GLM5.2",
              "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_1", "expert_5",
              "template_5", "automation_1", "workstation_expert", "WorkBuddy_Valorant",
+             "expert_use_maidehao", "expert_use_douyinyin",
+             "expert_use_shangjia_xuanchuan", "expert_use_bowangwang",
              "Sequential_Tasks_1", "Sequential_Tasks_2", "Sequential_Tasks_3",
              "Sequential_Tasks_4", "Sequential_Tasks_5",
              "Sequential_Tasks_6", "Sequential_Tasks_7"}
-    r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
-    rows = r.get("data", {}).get("tasks", [])
+    rows_by_code = {}
+    errors = []
+    sources = (
+        (None, "桌面", "/v2/activity/growth/tasks"),
+        (MP_HEADER, "小程序", "/v2/activity/growth/tasks"),
+        (None, "等级", "/activity/growth/tasks"),
+    )
+    for headers, label, path in sources:
+        try:
+            r = s.get(BASE + path, timeout=25, verify=False,
+                      headers=headers).json()
+            batch = (r.get("data") or {}).get("tasks") or []
+        except Exception as e:
+            errors.append("%s: %s" % (label, str(e)[:50]))
+            continue
+        for t in batch:
+            if not isinstance(t, dict):
+                continue
+            code = str(t.get("task_code") or t.get("code") or "").strip()
+            if code and code not in rows_by_code:
+                item = dict(t)
+                item["_source"] = label
+                rows_by_code[code] = item
+    if errors:
+        log("   ⚠️任务发现部分口径失败: %s" % "；".join(errors))
+    rows = list(rows_by_code.values())
+    if not rows:
+        log("   ⚠️任务发现未取得任何任务行")
+        return
     for t in rows:
         if not isinstance(t, dict):
             continue
-        code = t.get("task_code", "")
-        st = t.get("accept_status", "")
-        if code in known or st in ("claimed", "completed"):
+        code = t.get("task_code") or t.get("code") or ""
+        st = t.get("accept_status") or t.get("status") or ""
+        if code in known or str(code).startswith("expert_use_") or st in ("claimed", "completed"):
             continue
-        desc = t.get("task_desc", "")[:50]
-        if "subscribe" in code.lower() or "公众号" in (t.get("title", "") + desc):
-            log("   ⚠️新任务需手动: %s %s (%s) — 需微信扫码关注公众号" % (code, t.get("title", ""), desc))
-        elif "donat" in code.lower() or "捐款" in desc or "公益" in t.get("title", ""):
-            log("   ⚠️新任务需手动: %s %s (%s) — 涉及真实捐款" % (code, t.get("title", ""), desc))
+        title = str(t.get("title") or t.get("task_title") or t.get("task_name") or "")
+        desc = str(t.get("task_desc") or t.get("description") or "")[:50]
+        if code in LEVEL_TASK_CODES:
+            if code == "wechat_linked":
+                log("   ⚠️等级任务需客户端: %s %s — 需在官方客户端绑定微信" % (code, title))
+            else:
+                log("   ℹ️等级任务(只发现): %s %s %s" % (code, title, st))
+        elif "subscribe" in code.lower() or "公众号" in (title + desc):
+            log("   ⚠️新任务需手动: %s %s (%s) — 需微信扫码关注公众号" % (code, title, desc))
+        elif "donat" in code.lower() or "捐款" in desc or "公益" in title:
+            log("   ⚠️新任务需手动: %s %s (%s) — 涉及真实捐款" % (code, title, desc))
         else:
-            log("   ⚠️未覆盖新任务: %s %s (%s) — 请反馈更新脚本" % (code, t.get("title", ""), desc))
+            log("   ⚠️未覆盖新任务: %s %s (%s) — 请反馈更新脚本" % (code, title, desc))
     # 有效期预警：未完成但即将过期（或已过期）的任务
     import datetime
     today = beijing_today()
@@ -3570,8 +3873,13 @@ def claim_ready_tasks(s, log):
     for code, item in merged.items():
         if not item["claimable"]:
             continue
-        use_mp = bool(item["mp"] or code in MP_TASK_CODES)
-        ok = _mp_claim(s, code, log) if use_mp else claim(s, code, log)
+        use_mp = False if code in DESKTOP_ONLY_TASK_CODES else bool(
+            item["mp"] or code in MP_TASK_CODES)
+        try:
+            ok = _mp_claim(s, code, log) if use_mp else claim(s, code, log)
+        except Exception as exc:
+            ok = False
+            log("   ⚠️领奖[%s]异常: %s" % (code, str(exc)[:60]))
         if ok:
             claimed += 1
         time.sleep(1)
@@ -3763,8 +4071,9 @@ def _accept_with_verify(s, code, log):
         except Exception:
             pass
         t = prog(s, code)
-        ast = t[0] if t else "not_accepted"
-        ok = (r.status_code == 200 and status == "accepted" and ast != "not_accepted")
+        ast = t[0] if t else None
+        ok = (r.status_code == 200 and status == "accepted"
+              and ast in ("accepted", "completed", "claimed"))
         if ok:
             return True
         if attempt > 1:
@@ -3826,6 +4135,12 @@ def run_account(idx, acc, do_desktop):
     # 避免把上游 403 误报成「凭据失效」、也避免对注定被拒的端点空发请求。
     rp = s.get(BASE + "/v2/activity/growth/profile", timeout=25, verify=False)
     pj = _json_or_empty(rp)
+    if is_account_restricted(rp.status_code, pj or rp.text):
+        log("  🚫 WorkBuddy 账号受限（HTTP %s / 11140）：本轮停止，不刷新、不重试" % rp.status_code)
+        log("     这不等同于 Token 过期；请先在官方客户端确认账号状态")
+        summary["restricted"] = True
+        summary["rest"] = ["账号受限（11140）"]
+        return msgs, summary
     if rp.status_code in (401, 403) or not pj:
         if is_enterprise_denial(rp.status_code, pj):
             log("  🏢 企业版账号：无个人成长体系（上游对签到/成长端点一律拒绝，实测口径）")
@@ -3863,6 +4178,13 @@ def run_account(idx, acc, do_desktop):
         % (prof.get("level", "?"), summary["checkin_streak"], streak.get("days", "?"), energy, signed))
     if QUERY_ONLY:
         return msgs, {"idx": idx, "note": acc.get("note", ""), "done": 0, "total": 0, "rest": [], "level": "?", "energy": "?"}
+    # 先补领一次，避免后续动作处理器看到 completed/claimed 就直接跳过；
+    # 全部动作结束后还会再扫一次，收取本轮新达标的奖励。
+    log("  🎁 ── 领奖预扫 ──")
+    try:
+        claim_ready_tasks(s, log)
+    except Exception as e:
+        log("   ⚠️领奖预扫异常: %s" % str(e)[:80])
     # 桌面任务先做（新账号必须先有真实桌面会话，否则接受会被回滚、遥测不计数）
     need_rich = prog(s, "RichMeow_Chat")[0] not in ("completed", "claimed")
     need_skill = prog(s, "skill_1")[0] not in ("completed", "claimed")
@@ -3890,7 +4212,10 @@ def run_account(idx, acc, do_desktop):
         _usage = {"chat_5", "model_chat_glm5.2", "desktop", "richmeow_chat", "skill_1", "black_cat",
                   "expert_5", "expert_team_use_3", "template_5", "create_canvas", "playbook_prompt",
                   "sequential_tasks_1", "sequential_tasks_3", "sequential_tasks_5",
-                  "automation_1", "library_read", "hp_appearance", "buddy_app", "buddy_app_qq"}
+                  "automation_1", "library_read", "hp_appearance", "buddy_app", "buddy_app_qq",
+                  "expert_lighthouse", "workbuddy_valorant", "expert_use_maidehao",
+                  "expert_use_douyinyin", "expert_use_shangjia_xuanchuan",
+                  "expert_use_bowangwang"}
         _kept = {t for t in (TASK_ONLY or _usage) if t not in TASK_SKIP}
         if not (_kept & _usage):
             log("   ⚠️ 未包含任何「使用类」任务 → 成长中心的今日活跃（热力墙）不会点亮")
@@ -3923,6 +4248,13 @@ def run_account(idx, acc, do_desktop):
     _run("夜猫子", ["black_cat"], lambda: t_black_cat(s, uid, nick, log))
     _run("腾讯轻量云专家", ["Expert_lighthouse"], lambda: t_lighthouse(s, uid, nick, log))
     _run("无畏契约拼豆专家", ["WorkBuddy_Valorant"], lambda: t_valorant(s, uid, nick, log))
+    expert_codes = set(EXPERT_TASK_SPECS)
+    expert_codes.update(_dynamic_expert_task_codes(s))
+    for expert_code in sorted(expert_codes):
+        expert_spec = _expert_spec_for_task(s, expert_code) or {}
+        expert_label = expert_spec.get("profession") or expert_spec.get("name") or expert_code
+        _run(expert_label, [expert_code],
+             lambda code=expert_code: t_expert_use_task(s, uid, nick, log, code))
     _run("小程序对话", ["Sequential_Tasks_1"], lambda: t_sequential_tasks(s, uid, nick, log))
     _run("小程序专家对话", ["Sequential_Tasks_2"], lambda: t_sequential_tasks_2(s, uid, nick, log))
     _run("小程序对话5次", ["Sequential_Tasks_3"], lambda: t_sequential_tasks_3(s, uid, nick, log))
@@ -3943,7 +4275,10 @@ def run_account(idx, acc, do_desktop):
     _run("抽奖", ["lottery"], lambda: t_lottery(s, uid, nick, log))
     _run("礼包/补偿", ["gift"], lambda: t_gift_compensation(s, uid, nick, log))
     _run("工作台搭建师", ["workstation_expert"], lambda: t_workstation(s, uid, nick, log, tok))
-    t_unknown_tasks(s, uid, nick, log)   # 未覆盖任务检测不受过滤影响
+    try:
+        t_unknown_tasks(s, uid, nick, log)   # 未覆盖任务检测不受过滤影响
+    except Exception as e:
+        log("   ⚠️任务发现异常: %s" % str(e)[:80])
     # 领奖：按进度补领，不依赖 accept_status 的瞬时状态
     log("  🎁 ── 领奖 ──")
     claim_ready_tasks(s, log)

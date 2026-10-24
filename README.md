@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含（含国际版每日活跃）**
 
-🔐 Token 永续 · ✅ 34 项自动化 · 📱 小程序链式任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 38 项自动化 · 📱 小程序链式任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -20,7 +20,7 @@
 
 ## ✨ 这是什么
 
-一个脚本搞定 **WorkBuddy 成长中心 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 18 项云端任务 → 7 项小程序链式任务 → 8 项互动玩法 → 按进度自动补领 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
+一个脚本搞定 **WorkBuddy 成长中心 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 22 项云端任务 → 7 项小程序链式任务 → 8 项互动玩法 → 按进度自动补领 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
 >
 > 🗂️ **活动下线就归档**：已结束/已下架的任务（开学季活动、校园日、公益专家）不再占着主脚本，代码移到 [`archive/`](archive/) 留档，主脚本保持精简。
 
@@ -60,6 +60,8 @@ python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 | `WORKBUDDY_INTL_TOKENS`（获取） | 纯 OAuth 账号（Google / GitHub / X）用 `python workbuddy_intl_login.py` 走设备授权登录，免手机号 |
 
 > ⚠️ 国际版登录态与国内版不通用：`workbuddy.ai` 的令牌在 `copilot.tencent.com` 刷不了，反之亦然。
+>
+> 🚫 每个国际版账号在刷新 RT 和写操作前会先做一次只读状态预检；命中 `11140 / request illegal` 时明确标记为账号受限并结束该账号本轮，不继续刷新或重试。
 > 带上 `refresh_token` 时脚本会自动续期并写回 `wb_intl_tokens.json`；只给 AT 时按短期令牌使用。
 > 活动未开放属于正常状态，不会当成失败；签到成功与活跃结果分开报告，任一发失败都不会把签到判成失败。
 > 活动未开启但活跃上报 / 网页会话成功时，会按「今日活跃已完成」报告（积分由上游异步发放）。
@@ -352,13 +354,13 @@ python daily_forward.py daily.log --wx
 
 ## 📦 任务清单
 
-> 单账号每轮按服务端下发逐项核对：**当前为 20 项 = 19 项自动 + 1 项需人工（关注公众号）**；脚本覆盖能力共 **34 项**（云端 18 + 小程序 7 + 互动玩法 8 + 每日签到 1）。
+> 单账号每轮按服务端下发逐项核对：**当前为 24 项 = 23 项自动 + 1 项需人工（关注公众号）**；脚本覆盖能力共 **38 项**（云端 22 + 小程序 7 + 互动玩法 8 + 每日签到 1）。
 >
 > 📌 另有 **微信公众号关注任务**（`wb_wechat_oa_subscribe_task`）——需真人扫码关注满 24 小时，脚本会检测并提示，不自动完成。
 >
 > 📦 **已归档**（活动结束 / 服务端已下架，代码移出主脚本 → [`archive/`](archive/)）：开学季活动（4 项 + 幸运大转盘）、校园日 `school_season`、公益专家 `Expert_Philanthropy`。
 
-### ☁️ 成长中心任务（18 项云端 · 全自动）
+### ☁️ 成长中心任务（22 项云端 · 全自动）
 
 | # | 任务 | 说明 |
 | :-: | :--- | :--- |
@@ -380,11 +382,17 @@ python daily_forward.py daily.log --wx
 | 16 | 设置自动化任务 | 真实 rrule 定时对象形状 + automation 事件上报 |
 | 17 | 领取Buddy | 领养链路（+300c+8e） |
 | 18 | `WorkBuddy_Valorant` | 无畏契约拼豆专家真实对话 + 召唤链 + `actual_use(mode:LOCAL)` |
+| 19 | `expert_use_maidehao` | 卖得好（中国电商运营专家，`ex_GDl31WahyIH0`，v1.0.1） |
+| 20 | `expert_use_douyinyin` | 斗音音（抖音策略师，`ex_FbY5nlWTqDod`，v1.0.2） |
+| 21 | `expert_use_shangjia_xuanchuan` | 商家宣传设计师（商家宣传页与海报设计师，`ex_Weo3x2EZuSDm`，v1.6.0） |
+| 22 | `expert_use_bowangwang` | 播旺旺（直播电商教练，`ex_WZY136wV5aMt`，v1.0.2） |
 | — | ~~工作台搭建师~~ | ⚠️ **服务端已下线**（脚本仍兼容，出现时会自动处理） |
 
 > 🔗 **前置条件**：`first_buddy`（领取Buddy）是其余云端任务的登记前置——服务端对**没有 Buddy 实例**的账号会拒绝这些任务的 accept（`prerequisite not met: first_buddy (no buddy instance)`）。脚本已把领养链路提到云端任务最前面，并在 accept 报前置错误时**自动补跑前置再重试登记**。
 >
-> ⏳ **任务有效期**：部分任务由服务端下发 `valid_start` / `valid_end`（例如 `Buddy_App_QQ` 至 **2026-10-10**、`Hp_Appearance` 至 2026-11-02、`Expert_lighthouse` 至 2026-11-13），过期后不再能领取。脚本每次运行会读取任务行并做两件事：`locked=true`（未到上线时间）直接跳过并给出解锁日；**未完成且 7 天内到期 / 已过期**的任务打印 ⏰ 提醒，避免白白错过奖励。
+> ⏳ **任务有效期**：部分任务由服务端下发 `valid_start` / `valid_end`（例如 `Buddy_App_QQ` 至 **2026-10-10**、`Hp_Appearance` 至 2026-11-02、`Expert_lighthouse` 至 2026-11-13、四个 `expert_use_*` 至 **2026-11-20**），过期后不再能领取。脚本每次运行会读取任务行并做两件事：`locked=true`（未到上线时间）直接跳过并给出解锁日；**未完成且 7 天内到期 / 已过期**的任务打印 ⏰ 提醒，避免白白错过奖励。
+>
+> 🔎 **三源任务发现**：桌面 `/v2/activity/growth/tasks`、小程序 `/v2`、等级族无 `/v2` 的 `/activity/growth/tasks` 并不互为超集。脚本每次合并三套清单；`first_chat / skill_installed / wechat_linked / expert_summoned / template_used` 只发现和分类，其中微信绑定明确标记为客户端操作。
 
 ### 📦 已归档（不占主脚本）
 
@@ -436,11 +444,11 @@ python daily_forward.py daily.log --wx
 
 > 🔥 国内版签到后会补发一条 `chat_request_send` 活跃事件，并以成长热力图 `score > 0` 确认真正计分。HTTP 200 但当天仍为 0 时，默认补一次真实对话再回读；仍未计分则不写本地完成标记，下轮继续重试。
 >
-> 🎯 新增 `WorkBuddy_Valorant`：自动完成“无畏契约拼豆专家”召唤、真实对话和使用事件。
+> 🎯 专家体验任务：`WorkBuddy_Valorant` 与 `expert_use_*` 族都走真实对话、召唤和 `actual_use(mode:LOCAL)` 链；市场按职业名分页搜索后必须用 `expert_id` 精确落位，昵称和职业名分别写入 `name / expertTitle`。任务 `jump_url` 里的合法官方专家深链可安全覆盖内置 ID，未来新增的 `expert_use_*` code 也能自动解析。
 >
 > 🎁 领奖按任务进度扫描，`progress.current >= progress.target` 即补领，不依赖可能延迟或回滚的 `accept_status`。
 >
-> ✅ 签到网络失败、空回执或业务错误不再打印成“签到成功”。企业形态仍按账号 `enterpriseId` 判定；`token_source` 只表示授权流程，不作为跳过任务的依据。
+> ✅ 签到网络失败、空回执或业务错误不再打印成“签到成功”。企业形态仍按账号 `enterpriseId` 判定；`11140 / request illegal` 单独归类为账号受限，不再冒充 Token 过期。`token_source` 只表示授权流程，不作为跳过任务的依据。
 
 ---
 
@@ -448,12 +456,12 @@ python daily_forward.py daily.log --wx
 
 | 分类 | 总数 | 全自动 | 人工/不可做 |
 | :--- | :-: | :-: | :-: |
-| 成长中心任务（云端） | 18 | 18 | 0 |
+| 成长中心任务（云端） | 22 | 22 | 0 |
 | 小程序任务 | 7 | 7 | 0 |
 | 互动玩法 | 8 | 8 | 0 |
 | 每日签到 | 1 | 1 | 0 |
 | 📦 已归档 | 3 类 | — | 开学季活动（含大转盘）· 校园日 `school_season` · 公益专家 `Expert_Philanthropy` |
-| **合计** | **34** | **34** | **0** |
+| **合计** | **38** | **38** | **0** |
 
 > ℹ️ 成长中心任务会随活动更新。脚本内置**未覆盖任务检测**：遇到没适配的新任务会在日志中明确提示。
 >
@@ -475,7 +483,7 @@ python daily_forward.py daily.log --wx
 - **🧹 网页会话收尾**：真实对话成功即 `stop`、失败再 `delete`，避免占满上游 10 条活跃会话；命中 10105 时自动清理同任务前缀的旧会话后重试。
 - **📋 进度感知**：只上报缺口数量的事件，不重复提交已完成的进度。
 - **✅ accept 双重校验**：解析接口逐任务状态 + 回读验证 + 未落账自动逐个重试（服务端存在「请求成功但未登记」的形态）。
-- **🧩 前置依赖自动补救**：accept 逐项 `message` 里解析 `prerequisite not met: <任务>`，先补跑前置任务（如首只 Buddy 领养）再重试登记，新账号不再卡在「18 项未落账」。
+- **🧩 前置依赖自动补救**：accept 逐项 `message` 里解析 `prerequisite not met: <任务>`，先补跑前置任务（如首只 Buddy 领养）再重试登记，新账号不再卡在「22 项未落账」。
 - **🎯 真实会话 id**：专家/技能类任务的 `requestId` / `messageId` 取自真实对话的服务端消息 id（`cmb-` 形态），并对齐 `has_expert` / `mode: LOCAL` 口径——上游 panel 三账号实测点亮 `Expert_lighthouse`。
 - **🎁 领奖口径对齐**：连登奖励按服务端 `redemption_status` 判定档位（已领不重发请求），实物奖自动提示填写收货地址。
 - **📈 签到读数 + 到期预警**：签到后读签到活动状态，报告给出**签到连签天数 / 累计积分 / 距下一次连签奖励的天数**；距活动 `end_time` ≤7 天或活动已关闭时给出 ⚠️ 提示（避免“活动结束才发现收入断档”）。
@@ -543,7 +551,7 @@ python daily_forward.py daily.log --wx
    ✅ 全部完成！
 
 📊 ══ 总计 ══
-👥 共2个账号，任务完成 33/34 项
+👥 共2个账号，任务完成 37/38 项
 
    · 桌面端对话（1个账号待完成）
    · 尝鲜热门技能（1个账号待完成）

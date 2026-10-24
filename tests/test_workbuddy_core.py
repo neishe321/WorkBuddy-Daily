@@ -11,6 +11,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -23,6 +24,16 @@ FUNCTIONS = {
     for node in TREE.body
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
 }
+
+
+def assignment_value(name):
+    for node in TREE.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(isinstance(target, ast.Name) and target.id == name
+               for target in node.targets):
+            return ast.literal_eval(node.value)
+    raise KeyError(name)
 
 
 def load_functions(*names, **globals_):
@@ -117,6 +128,7 @@ class CoreBehaviorTests(unittest.TestCase):
             BASE="https://example.test",
             MP_HEADER={"X-Client-Platform": "miniprogram"},
             MP_TASK_CODES=set(),
+            DESKTOP_ONLY_TASK_CODES=set(),
             time=type("Time", (), {"sleep": staticmethod(sleep_calls.append)}),
         )
         session = Session()
@@ -193,6 +205,158 @@ class CoreBehaviorTests(unittest.TestCase):
         second_logs = []
         module["t_sign"](object(), "u1", "nick", second_logs.append)
         self.assertIn("状态回读确认今日已签", " ".join(second_logs))
+
+    def test_accept_verify_requires_positive_state_readback(self):
+        class Session:
+            def __init__(self):
+                self.posts = 0
+
+            def post(self, url, **kwargs):
+                self.posts += 1
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"results": [{"status": "accepted"}]},
+                })
+
+        states = [
+            (None, None, None),
+            (None, None, None),
+            ("accepted", 0, 1),
+        ]
+        module = load_functions(
+            "_accept_with_verify",
+            BASE="https://example.test",
+            WRITE_GAP=0,
+            prog=lambda session, code: states.pop(0),
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+        )
+        session = Session()
+        logs = []
+        self.assertFalse(module["_accept_with_verify"](session, "new_task", logs.append))
+        self.assertTrue(module["_accept_with_verify"](session, "new_task", logs.append))
+        self.assertEqual(3, session.posts)
+
+    def test_accept_all_repairs_prerequisite_then_confirms_state(self):
+        class Session:
+            def get(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"tasks": [{
+                        "task_code": "dependent_task",
+                        "accept_status": "not_accepted",
+                    }]},
+                })
+
+            def post(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"results": [{
+                        "task_code": "dependent_task",
+                        "status": "error",
+                        "message": "prerequisite not met: first_buddy (missing)",
+                    }]},
+                })
+
+        module = load_functions(
+            "t_accept_all",
+            BASE="https://example.test",
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+            prog=lambda session, code: ("accepted", 0, 1),
+            ensure_first_buddy=lambda session, uid, nick, log: True,
+            _accept_with_verify=lambda session, code, log: True,
+        )
+        logs = []
+        module["t_accept_all"](Session(), "u1", "nick", logs.append)
+        text = " ".join(logs)
+        self.assertIn("待前置「first_buddy」满足", text)
+        self.assertIn("Buddy 已就绪", text)
+        self.assertIn("全部登记生效", text)
+
+    def test_unknown_tasks_discovers_mp_rows_when_desktop_fails(self):
+        class Session:
+            def get(self, url, **kwargs):
+                if kwargs.get("headers"):
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {"tasks": [{
+                            "task_code": "mp_new_task",
+                            "title": "小程序新任务",
+                            "task_desc": "完成一次动作",
+                            "accept_status": "not_accepted",
+                        }]},
+                    })
+                if url.endswith("/activity/growth/tasks") and "/v2/" not in url:
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {"tasks": [
+                            {"code": "first_chat", "status": "not_accepted"},
+                            {"code": "wechat_linked", "status": "not_accepted"},
+                        ]},
+                    })
+                raise RuntimeError("desktop unavailable")
+
+        module = load_functions(
+            "t_unknown_tasks",
+            BASE="https://example.test",
+            MP_HEADER={"X-Client-Platform": "miniprogram"},
+            LEVEL_TASK_CODES={
+                "first_chat", "skill_installed", "wechat_linked",
+                "expert_summoned", "template_used",
+            },
+            beijing_today=lambda: __import__("datetime").date(2026, 10, 23),
+        )
+        logs = []
+        module["t_unknown_tasks"](Session(), "u1", "nick", logs.append)
+        text = " ".join(logs)
+        self.assertIn("任务发现部分口径失败", text)
+        self.assertIn("mp_new_task", text)
+        self.assertIn("未覆盖新任务", text)
+        self.assertIn("等级任务(只发现): first_chat", text)
+        self.assertIn("等级任务需客户端: wechat_linked", text)
+
+    def test_claim_ready_is_idempotent_across_scans(self):
+        class Session:
+            def __init__(self):
+                self.claimed = False
+                self.posts = []
+
+            def get(self, url, **kwargs):
+                status = "claimed" if self.claimed else "accepted"
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"tasks": [{
+                        "task_code": "chat_5",
+                        "accept_status": status,
+                        "progress": {"current": 5, "target": 5},
+                    }]},
+                })
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs.get("headers")))
+                self.claimed = True
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"already_claimed": False, "credit": 100, "energy": 5},
+                })
+
+        module = load_functions(
+            "_api_code_ok", "_claim_response_ok", "claim", "_mp_claim",
+            "claim_ready_tasks",
+            _as_int=lambda value, default=0: int(value or default),
+            BASE="https://example.test",
+            MP_HEADER={"X-Client-Platform": "miniprogram"},
+            MP_TASK_CODES=set(),
+            DESKTOP_ONLY_TASK_CODES=set(),
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+        )
+        session = Session()
+        first_logs = []
+        second_logs = []
+        module["claim_ready_tasks"](session, first_logs.append)
+        module["claim_ready_tasks"](session, second_logs.append)
+        self.assertEqual(1, len(session.posts))
+        self.assertIn("达标补领完成: 1 项", " ".join(first_logs))
+        self.assertIn("无达标未领奖励", " ".join(second_logs))
 
     def test_travel_claim_uses_record_id_and_real_reward(self):
         response_queue = [
@@ -404,6 +568,332 @@ class CoreBehaviorTests(unittest.TestCase):
         encoded = json.dumps(event, ensure_ascii=False)
         for prefix in ("wb2api", "wbmp", "wb-daily", "fp-"):
             self.assertNotIn(prefix, encoded)
+
+    def test_expert_mapping_parser_and_dynamic_jump_url_override(self):
+        expected = {
+            "expert_use_maidehao":
+                ("ex_GDl31WahyIH0", "卖得好", "中国电商运营专家", "1.0.1"),
+            "expert_use_douyinyin":
+                ("ex_FbY5nlWTqDod", "斗音音", "抖音策略师", "1.0.2"),
+            "expert_use_shangjia_xuanchuan":
+                ("ex_Weo3x2EZuSDm", "商家宣传设计师",
+                 "商家宣传页与海报设计师", "1.6.0"),
+            "expert_use_bowangwang":
+                ("ex_WZY136wV5aMt", "播旺旺", "直播电商教练", "1.0.2"),
+        }
+        specs = assignment_value("EXPERT_TASK_SPECS")
+        names = assignment_value("TASK_NAME_CN")
+        self.assertEqual(set(expected), set(specs))
+        for code, (expert_id, display_name, profession, version) in expected.items():
+            self.assertEqual(expert_id, specs[code]["id"])
+            self.assertEqual(display_name, specs[code]["name"])
+            self.assertEqual(profession, specs[code]["profession"])
+            self.assertEqual(profession, names[code])
+            self.assertEqual(version, specs[code]["version"])
+
+        module = load_functions(
+            "_parse_expert_deeplink", "_expert_id_from_jump_url",
+            parse_qs=parse_qs, urlparse=urlparse, re=re,
+            _EXPERT_ID_RE=re.compile(r"^ex_[A-Za-z0-9]{6,64}$"),
+            _TRUSTED_JUMP_HOST_SUFFIXES=(
+                "workbuddy.cn", "codebuddy.cn", "tencent.com"),
+        )
+        direct = "workbuddy://experts?expertId=ex_GDl31WahyIH0"
+        wrapped = (
+            "https://www.workbuddy.cn/jump?deeplink="
+            "workbuddy%3A%2F%2Fexperts%3FexpertId%3Dex_FbY5nlWTqDod"
+        )
+        bare_parameter = (
+            "deeplink=workbuddy://experts?expertId=ex_Weo3x2EZuSDm"
+        )
+        self.assertEqual("ex_GDl31WahyIH0",
+                         module["_expert_id_from_jump_url"](direct))
+        self.assertEqual("ex_FbY5nlWTqDod",
+                         module["_expert_id_from_jump_url"](wrapped))
+        self.assertEqual("ex_Weo3x2EZuSDm",
+                         module["_expert_id_from_jump_url"](bare_parameter))
+        invalid = [
+            "https://evil.test/ex_GDl31WahyIH0",
+            "https://evil.test/?next=workbuddy://experts?expertId=ex_GDl31WahyIH0",
+            "https://evil.test/?deeplink=workbuddy://experts?expertId=ex_GDl31WahyIH0",
+            "https://evil.test/?deeplink=https://evil.test/?expertId=ex_GDl31WahyIH0",
+            "workbuddy://experts/other?expertId=ex_GDl31WahyIH0",
+            "workbuddy://experts?expertId=not_an_expert",
+            "workbuddy://experts?expertId=ex_GDl31WahyIH0&expertId=ex_FbY5nlWTqDod",
+        ]
+        for value in invalid:
+            self.assertEqual("", module["_expert_id_from_jump_url"](value), value)
+
+        class Session:
+            def get(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "data": {"tasks": [{
+                        "task_code": "expert_use_maidehao",
+                        "jump_url":
+                            "workbuddy://experts?expertId=ex_Rotated12345",
+                    }]},
+                })
+
+        integration = load_functions(
+            "_parse_expert_deeplink", "_expert_id_from_jump_url",
+            "_growth_task_rows", "_growth_task_row", "_expert_spec_for_task",
+            parse_qs=parse_qs, urlparse=urlparse, re=re,
+            _EXPERT_ID_RE=re.compile(r"^ex_[A-Za-z0-9]{6,64}$"),
+            _TRUSTED_JUMP_HOST_SUFFIXES=(
+                "workbuddy.cn", "codebuddy.cn", "tencent.com"),
+            EXPERT_TASK_SPECS=specs,
+            TASK_NAME_CN=names,
+            BASE="https://example.test",
+        )
+        spec = integration["_expert_spec_for_task"](
+            Session(), "expert_use_maidehao")
+        self.assertEqual("ex_Rotated12345", spec["id"])
+        self.assertEqual("卖得好", spec["name"])
+        self.assertEqual("中国电商运营专家", spec["profession"])
+
+    def test_market_expert_lookup_requires_exact_id(self):
+        responses = [
+            FakeResponse(payload={
+                "data": {"experts": [
+                    {
+                        "expert_id": "ex_WrongExpert",
+                        "display_name_zh": "抖音策略师",
+                        "profession_zh": "抖音全域增长策略师",
+                        "version": "9.9.9",
+                    },
+                    {
+                        "expert_id": "ex_FbY5nlWTqDod",
+                        "display_name_zh": "斗音音",
+                        "profession_zh": "抖音策略师",
+                        "version": "1.0.2",
+                    },
+                ]},
+            }),
+            FakeResponse(payload={"data": {"experts": []}}),
+        ]
+        calls = []
+
+        def api_retry(session, method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return responses.pop(0)
+
+        module = load_functions(
+            "_market_expert_by_id",
+            api_retry=api_retry,
+            CBDOMAIN="https://example.test",
+            _EXPERT_ID_RE=re.compile(r"^ex_[A-Za-z0-9]{6,64}$"),
+            _extract_name=lambda value: (
+                value.get("zh") if isinstance(value, dict) else value),
+        )
+        found = module["_market_expert_by_id"](
+            object(), "抖音策略师", "ex_FbY5nlWTqDod")
+        self.assertEqual(
+            {
+                "id": "ex_FbY5nlWTqDod",
+                "name": "斗音音",
+                "profession": "抖音策略师",
+                "version": "1.0.2",
+            },
+            found,
+        )
+        self.assertEqual("POST", calls[0][0])
+        self.assertEqual(20, calls[0][2]["body"]["page_size"])
+        self.assertIsNone(module["_market_expert_by_id"](
+            object(), "抖音策略师", "ex_FbY5nlWTqDod"))
+
+    def test_workbuddy_11140_is_account_restricted_not_token_expiry(self):
+        module = load_functions(
+            "interpret_failure", "is_account_restricted", json=json)
+        description, skip = module["interpret_failure"](
+            403, {"code": 11140, "msg": "request illegal"})
+        self.assertTrue(skip)
+        self.assertIn("账号受限", description)
+        self.assertNotIn("Token", description)
+        self.assertTrue(module["is_account_restricted"](
+            403, {"msg": "account restricted"}))
+        self.assertTrue(module["is_account_restricted"](
+            403, "<html><title>11140 request illegal</title></html>"))
+        self.assertFalse(module["is_account_restricted"](
+            401, {"msg": "token expired"}))
+        self.assertTrue(module["interpret_failure"](
+            401, {"msg": "token expired"})[1])
+
+    def test_local_expert_flow_uses_real_chat_and_local_events(self):
+        states = [("accepted", 0, 1), ("completed", 1, 1), ("completed", 1, 1)]
+        captured = {}
+
+        def webchat2(session, name, prompt, meta):
+            captured["meta"] = meta
+            return "conv-1", "OK", "cmb-0123456789abcdef0123456789abcdef"
+
+        def report_desktop_events(session, uid, nick, events):
+            captured["events"] = events
+            return 200
+
+        module = load_functions(
+            "_run_local_expert_task",
+            re=re, uuid=uuid, json=json,
+            time=type("Time", (), {
+                "time": staticmethod(time.time),
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+            _EXPERT_ID_RE=re.compile(r"^ex_[A-Za-z0-9]{6,64}$"),
+            prog=lambda session, code: states.pop(0),
+            _market_expert_by_id=lambda session, keyword, expected_id: {
+                "name": "斗音音",
+                "profession": "抖音策略师",
+                "version": "1.0.2",
+            },
+            get_normal_experts=lambda count: [{
+                "id": "ex_Dynamic12345",
+                "name": "抖音策略师",
+                "version": "1.0.9",
+            }],
+            webchat2=webchat2,
+            desktop_chat_sequence=lambda uid, nick, conv, req, msg: [{
+                "eventCode": "agent_task_created",
+                "conversationId": conv,
+                "requestId": req,
+            }],
+            report_desktop_events=report_desktop_events,
+            report=lambda *args, **kwargs: 200,
+            _new_message_id=lambda: "fallback-message",
+            _new_conversation_id=lambda: "fallback-conversation",
+        )
+        logs = []
+        module["_run_local_expert_task"](
+            object(), "uid-1", "nick", logs.append, "expert_use_douyinyin",
+            {"id": "ex_Dynamic12345", "name": "斗音音",
+             "profession": "抖音策略师", "version": "1.0.0",
+             "slug": "douyinyin"},
+            conv_name="expert-douyinyin",
+        )
+        actual = [event for event in captured["events"]
+                  if event.get("eventCode") == "expert_actual_use"][-1]
+        created = [event for event in captured["events"]
+                   if event.get("eventCode") == "agent_task_created"][0]
+        self.assertEqual("ex_Dynamic12345", actual["id"])
+        self.assertEqual("LOCAL", actual["mode"])
+        self.assertEqual("斗音音", actual["name"])
+        self.assertEqual("抖音策略师", actual["expertTitle"])
+        self.assertEqual("1.0.2", actual["version"])
+        self.assertTrue(created["has_expert"])
+        self.assertEqual("ex_Dynamic12345", created["expert_id"])
+        self.assertEqual("斗音音", created["expert_name"])
+        self.assertEqual("ex_Dynamic12345",
+                         captured["meta"]["codebuddy.ai"]["expertId"])
+        growth = json.loads(
+            captured["meta"]["codebuddy.ai"]["growthEvent"])
+        self.assertEqual("斗音音", growth[0]["extra"]["name"])
+        self.assertEqual(
+            "抖音策略师", growth[0]["extra"]["expertTitle"])
+        self.assertIn("completed 1/1", " ".join(logs))
+
+    def test_dynamic_expert_family_can_resolve_id_from_unique_market_title(self):
+        captured = {}
+        states = [("accepted", 0, 1), ("completed", 1, 1), ("completed", 1, 1)]
+
+        def report_desktop_events(session, uid, nick, events):
+            captured["events"] = events
+            return 200
+
+        module = load_functions(
+            "_run_local_expert_task",
+            re=re, uuid=uuid, json=json,
+            time=type("Time", (), {
+                "time": staticmethod(time.time),
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+            _EXPERT_ID_RE=re.compile(r"^ex_[A-Za-z0-9]{6,64}$"),
+            prog=lambda session, code: states.pop(0),
+            _market_expert_by_id=lambda session, keyword, expected_id: {
+                "id": "ex_FutureExpert1",
+                "name": "未来专家昵称",
+                "profession": keyword,
+                "version": "2.0.0",
+            },
+            get_normal_experts=lambda count: [],
+            webchat2=lambda session, name, prompt, meta:
+                ("conv-future", "OK", "cmb-0123456789abcdef0123456789abcdef"),
+            desktop_chat_sequence=lambda uid, nick, conv, req, msg: [{
+                "eventCode": "agent_task_created",
+                "conversationId": conv,
+                "requestId": req,
+            }],
+            report_desktop_events=report_desktop_events,
+            report=lambda *args, **kwargs: 200,
+            _new_message_id=lambda: "fallback-message",
+            _new_conversation_id=lambda: "fallback-conversation",
+        )
+        module["_run_local_expert_task"](
+            object(), "uid-1", "nick", lambda message: None,
+            "expert_use_future",
+            {"id": "", "name": "", "profession": "未来职业",
+             "version": "", "slug": "future"},
+        )
+        actual = [event for event in captured["events"]
+                  if event.get("eventCode") == "expert_actual_use"][-1]
+        self.assertEqual("ex_FutureExpert1", actual["id"])
+        self.assertEqual("未来专家昵称", actual["name"])
+        self.assertEqual("未来职业", actual["expertTitle"])
+        self.assertEqual("2.0.0", actual["version"])
+        self.assertEqual("LOCAL", actual["mode"])
+
+    def test_expert_use_tasks_claim_on_desktop_even_when_mp_rows_exist(self):
+        codes = {
+            "expert_use_maidehao",
+            "expert_use_douyinyin",
+            "expert_use_shangjia_xuanchuan",
+            "expert_use_bowangwang",
+        }
+        desktop_tasks = {
+            "data": {"tasks": [{
+                "task_code": code,
+                "accept_status": "accepted",
+                "progress": {"current": 1, "target": 1},
+            } for code in sorted(codes)]},
+        }
+        mp_tasks = {
+            "data": {"tasks": [{
+                "task_code": code,
+                "accept_status": "accepted",
+                "progress": {"current": 1, "target": 1},
+            } for code in sorted(codes)]},
+        }
+
+        class Session:
+            def __init__(self):
+                self.posts = []
+
+            def get(self, url, **kwargs):
+                return FakeResponse(
+                    payload=mp_tasks if kwargs.get("headers") else desktop_tasks)
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs.get("headers")))
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"credit": 100, "energy": 5},
+                })
+
+        module = load_functions(
+            "_api_code_ok", "_claim_response_ok", "claim", "_mp_claim",
+            "claim_ready_tasks",
+            _as_int=lambda value, default=0: int(value or default),
+            BASE="https://example.test",
+            MP_HEADER={"X-Client-Platform": "miniprogram"},
+            MP_TASK_CODES=set(),
+            DESKTOP_ONLY_TASK_CODES=frozenset(codes),
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+        )
+        session = Session()
+        logs = []
+        module["claim_ready_tasks"](session, logs.append)
+
+        claimed = {url.rsplit("/", 2)[-2] for url, _ in session.posts}
+        self.assertEqual(codes, claimed)
+        self.assertTrue(all(headers is None for _, headers in session.posts))
+        self.assertIn("达标补领完成: 4 项", " ".join(logs))
 
     def test_desktop_fingerprint_matches_cn_current_shape(self):
         module = load_functions(

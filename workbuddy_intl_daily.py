@@ -313,12 +313,44 @@ def first_text(*values):
     return ""
 
 
+class AccountRestricted(RuntimeError):
+    pass
+
+
+def is_account_restricted(status_code, payload):
+    """WorkBuddy 国际版账号级风控：11140 / request illegal。"""
+    code = payload.get("code") if isinstance(payload, dict) else None
+    blob = (
+        json.dumps(payload, ensure_ascii=False)
+        if isinstance(payload, (dict, list))
+        else str(payload or "")
+    ).lower()
+    if code in (11140, "11140"):
+        return True
+    markers = (
+        "11140", "account restricted", "request illegal",
+        "账号受限", "账号被限制", "账户受限",
+    )
+    return int(status_code or 0) == 403 and any(marker in blob for marker in markers)
+
+
+def preflight_restricted(token, uid):
+    """在刷新 RT 或执行写操作前只读探测账号级风控。"""
+    response = post_json(STATUS_PATH, token, uid)
+    payload = json_of(response)
+    if is_account_restricted(response.status_code, payload or response.text):
+        raise AccountRestricted(
+            "WorkBuddy 国际版账号受限（HTTP %s / 11140）" % response.status_code)
+    return response, payload
+
+
 def claim_label(code, msg):
     mapping = {
         41000: "活动未开始或已结束",
         40901: "任务暂不可领取",
         401: "登录状态失效，请重新登录",
         40100: "登录状态失效，请重新登录",
+        11140: "账号受限，请检查账号状态",
     }
     return mapping.get(code) or msg or ("code=%s" % code)
 
@@ -527,6 +559,7 @@ def main():
             continue
         log("👤 [%d] %s  token=%s" % (index, account["note"], mask(account["token"])))
         try:
+            preflight_restricted(account["token"], account["uid"])
             if account.get("refresh_token"):
                 new_at, new_rt = refresh_token(account["token"], account["refresh_token"])
                 if new_at:
@@ -562,6 +595,9 @@ def main():
                 ("成功（%s）" % report_note) if report_ok else ("未成功（%s）" % report_note),
                 ("成功（%s）" % keep_note) if keep_ok else ("未成功（%s）" % keep_note),
                 ("成功（%s）" % web_note) if web_ok else ("未成功（%s）" % web_note)))
+        except AccountRestricted as error:
+            log("   🚫 %s：本轮停止，不刷新、不重试" % error)
+            lines.append("账号%d %s：🚫 %s" % (index, account["note"], error))
         except Exception as error:
             log("   ❌ 异常: %s" % error)
             lines.append("账号%d %s：❌ %s" % (index, account["note"], error))
