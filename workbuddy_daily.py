@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.21
+🌱 WorkBuddy Daily - 全能签到脚本 v3.22
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -11,8 +11,8 @@
 
 ✨ 特性
    🔐 Token 永续     只配一个刷新令牌变量，脚本自动续期（90 天滚动，永不过期）
-   ✅ 成长任务       22 项云端任务全覆盖（含专家体验任务；小程序链式见下一行）
-   📱 小程序任务     Tasks_1~7 链式任务（每日零点解锁一环，日志给出解锁日期）
+   ✅ 成长任务       22 项云端任务全覆盖（含专家体验任务；链式任务见下一行）
+   📱 链式任务       Tasks_1~6 小程序 + Task_7 PC 灵感（每日零点解锁一环）
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
    🎁 自动领奖       按进度扫描全部已达标任务；桌面/小程序分别补领
@@ -107,14 +107,14 @@
       GLM-5.2模型对话 · 和AI聊天5次 · 夜猫子活动 · 召唤3次专家团 · 召唤5次专家
       使用5个模板 · 设置自动化任务 · 领取Buddy · 无畏契约拼豆专家
       中国电商运营专家 · 抖音策略师 · 商家宣传页与海报设计师 · 直播电商教练
-   📱 小程序成长任务（7 项，需 X-Client-Platform: miniprogram 头）
+   📱 链式成长任务（Tasks_1~6 小程序 + Task_7 PC）
       Sequential_Tasks_1 完成 1 次对话（+100c+5e）
       Sequential_Tasks_2 选中专家并完成对话（+200c+5e）
       Sequential_Tasks_3 完成 5 次对话（+300c+5e）
       Sequential_Tasks_4 创建 1 个定时任务（+100c+5e）
       Sequential_Tasks_5 使用 1 次 GLM5.2（+100c+5e）
       Sequential_Tasks_6 完成 10 次对话
-      Sequential_Tasks_7 体验灵感功能
+      Sequential_Tasks_7 体验灵感功能（PC 限定；默认列表/accept/桌面事件/Web 领奖）
       ※ Tasks_1~7 为链式任务，完成一环后次日零点解锁下一环（脚本自动推进，日志给出解锁日期）
    🎮 互动玩法（8 项）
       抽奖 · 盲盒 · Buddy信息 · 派猫猫旅行 · 连签兑换 · 补签卡 · 礼包补偿 · 徽章
@@ -240,14 +240,14 @@ TASK_NAME_CN = {
     "Sequential_Tasks_4": "小程序定时任务",
     "Sequential_Tasks_5": "小程序GLM5.2",
     "Sequential_Tasks_6": "小程序对话10次",
-    "Sequential_Tasks_7": "小程序灵感功能",
+    "Sequential_Tasks_7": "PC灵感功能",
     "school_season": "校园日活动",
 }
 
 MP_TASK_CODES = {
     "Sequential_Tasks_1", "Sequential_Tasks_2", "Sequential_Tasks_3",
     "Sequential_Tasks_4", "Sequential_Tasks_5", "Sequential_Tasks_6",
-    "Sequential_Tasks_7", "school_season",
+    "school_season",
 }
 
 EXPERT_TASK_SPECS = {
@@ -3405,6 +3405,34 @@ def mp_playbook_events(uid, nick, case_id="01-ProductDesign", case_name="产品�
     return [cta, send]
 
 
+def desktop_playbook_events(uid, nick, case_id="01-ProductDesign", case_name="产品设计"):
+    """Sequential_Tasks_7 的 PC 口径：桌面对话链 + 灵感点击/提示事件。"""
+    conversation_id = _new_conversation_id()
+    request_id = _new_message_id()
+    message_id = "msg-" + request_id[-8:]
+    events = desktop_chat_sequence(
+        uid, nick, conversation_id, request_id, message_id)
+    payload = {
+        "id": case_id, "name": case_name, "type": "document",
+        "categoryId": "", "categoryName": "",
+    }
+    cta = dict(payload)
+    cta.update({
+        "eventCode": "playbook_cta_click", "source": "discover",
+        "position": 0, "conversationId": conversation_id,
+        "requestId": request_id, "messageId": message_id,
+    })
+    send = dict(payload)
+    send.update({
+        "eventCode": "playbook_prompt_send", "source": "discover",
+        "promptLength": 30, "isOfficial": 1,
+        "conversationId": conversation_id, "requestId": request_id,
+        "messageId": message_id, "skills": "", "skillNames": "",
+    })
+    events.extend([cta, send])
+    return events
+
+
 def mp_mini_expert_event(uid, nick, expert_id, expert_name):
     """Sequential_Tasks_2 判据：mp 指纹 expert_actual_use（上游小程序源码实测形状）。
 
@@ -3719,12 +3747,44 @@ def t_sequential_tasks_6(s, uid, nick, log):
 
 
 def t_sequential_tasks_7(s, uid, nick, log):
-    """小程序成长任务 Sequential_Tasks_7：体验灵感功能"""
-    def _evs(i):
-        evs = mp_playbook_events(uid, nick)
-        report_desktop_events(s, uid, nick, evs)   # PC 口径补一发（判据疑 PC/mp 双侧）
-        return evs
-    _mp_do_task(s, uid, nick, "Sequential_Tasks_7", log, _evs, "小程序灵感功能", target=1)
+    """Sequential_Tasks_7：PC 限定灵感任务（默认列表/accept/桌面事件/Web 领奖）。"""
+    code = "Sequential_Tasks_7"
+    row = _growth_task_row(s, code)
+    if row is None:
+        log("   PC灵感功能: 桌面任务列表未下发，跳过")
+        return
+    if row.get("locked"):
+        log("   PC灵感功能: 未到上线时间（解锁 %s），跳过" % (
+            str(row.get("valid_start") or "见任务页")[:10]))
+        return
+    status = row.get("accept_status") or row.get("status") or ""
+    if status == "claimed":
+        log("   PC灵感功能: 已领取，跳过")
+        return
+    progress = row.get("progress") or {}
+    current = _as_int(progress.get("current"))
+    target = _as_int(progress.get("target")) or 1
+    if current >= target:
+        claim(s, code, log)
+        return
+    if status in ("", "not_accepted") and not _accept_with_verify(s, code, log):
+        log("   PC灵感功能: 接受任务失败，跳过")
+        return
+    try:
+        events = desktop_playbook_events(uid, nick)
+        report_desktop_events(s, uid, nick, events)
+        time.sleep(4)
+    except Exception as exc:
+        log("   PC灵感功能: 桌面事件上报失败 %s" % str(exc)[:60])
+        return
+    status, current, target = prog(s, code)
+    if status not in ("completed", "claimed"):
+        log("   PC灵感功能: 已上报但进度未点亮 %s/%s，不领奖" % (
+            current, target))
+        return
+    if status == "completed":
+        claim(s, code, log)
+    log("   PC灵感功能: %s %s/%s" % (status, current, target))
 
 
 def t_unknown_tasks(s, uid, nick, log):
@@ -4261,7 +4321,7 @@ def run_account(idx, acc, do_desktop):
     _run("小程序定时任务", ["Sequential_Tasks_4"], lambda: t_sequential_tasks_4(s, uid, nick, log))
     _run("小程序GLM5.2", ["Sequential_Tasks_5"], lambda: t_sequential_tasks_5(s, uid, nick, log))
     _run("小程序对话10次", ["Sequential_Tasks_6"], lambda: t_sequential_tasks_6(s, uid, nick, log))
-    _run("小程序灵感功能", ["Sequential_Tasks_7"], lambda: t_sequential_tasks_7(s, uid, nick, log))
+    _run("PC灵感功能", ["Sequential_Tasks_7"], lambda: t_sequential_tasks_7(s, uid, nick, log))
     _run("徽章", ["badges"], lambda: t_badges(s, uid, nick, log))
     _run("盲盒", ["blindbox"], lambda: t_blindbox(s, uid, nick, log))
     _run("Buddy 信息", ["buddy_info"], lambda: t_buddy_info(s, uid, nick, log))

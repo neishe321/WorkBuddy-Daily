@@ -314,6 +314,69 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("等级任务(只发现): first_chat", text)
         self.assertIn("等级任务需客户端: wechat_linked", text)
 
+    def test_sequential_tasks_7_uses_pc_flow_and_web_claim(self):
+        calls = []
+        module = load_functions(
+            "t_sequential_tasks_7",
+            _growth_task_row=lambda session, code: {
+                "task_code": code,
+                "accept_status": "accepted",
+                "progress": {"current": 0, "target": 1},
+                "tag": "PC 限定",
+                "jump_url": "workbuddy://playbook",
+            },
+            _as_int=lambda value: int(value or 0),
+            _accept_with_verify=lambda session, code, log: True,
+            desktop_playbook_events=lambda uid, nick: [{
+                "eventCode": "playbook_prompt_send",
+                "conversationId": "conv-pc",
+            }],
+            report_desktop_events=lambda session, uid, nick, events:
+                calls.append(("desktop", events)) or 200,
+            time=type("Time", (), {
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+            prog=lambda session, code: ("completed", 1, 1),
+            claim=lambda session, code, log:
+                calls.append(("claim", code)) or True,
+        )
+        logs = []
+        module["t_sequential_tasks_7"](
+            object(), "uid", "nick", logs.append)
+        self.assertEqual("desktop", calls[0][0])
+        self.assertEqual(
+            "playbook_prompt_send", calls[0][1][0]["eventCode"])
+        self.assertEqual(("claim", "Sequential_Tasks_7"), calls[1])
+        self.assertNotIn(
+            "Sequential_Tasks_7", assignment_value("MP_TASK_CODES"))
+        self.assertIn("PC灵感功能", " ".join(logs))
+
+    def test_sequential_tasks_7_does_not_claim_when_progress_stays_zero(self):
+        claimed = []
+        module = load_functions(
+            "t_sequential_tasks_7",
+            _growth_task_row=lambda session, code: {
+                "task_code": code,
+                "accept_status": "accepted",
+                "progress": {"current": 0, "target": 1},
+            },
+            _as_int=lambda value: int(value or 0),
+            _accept_with_verify=lambda session, code, log: True,
+            desktop_playbook_events=lambda uid, nick: [],
+            report_desktop_events=lambda *args: 200,
+            time=type("Time", (), {
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+            prog=lambda session, code: ("accepted", 0, 1),
+            claim=lambda session, code, log:
+                claimed.append(code) or True,
+        )
+        logs = []
+        module["t_sequential_tasks_7"](
+            object(), "uid", "nick", logs.append)
+        self.assertEqual([], claimed)
+        self.assertIn("进度未点亮", " ".join(logs))
+
     def test_claim_ready_is_idempotent_across_scans(self):
         class Session:
             def __init__(self):
