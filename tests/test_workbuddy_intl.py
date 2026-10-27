@@ -18,8 +18,54 @@ class Response:
     def json(self):
         return self.payload
 
+    def close(self):
+        return None
+
 
 class InternationalBehaviorTests(unittest.TestCase):
+    def test_keepalive_403_is_model_permission_not_account_restriction(self):
+        response = Response(403, {"code": 403, "msg": "model forbidden"})
+
+        class FakeSession:
+            def __init__(self):
+                self.trust_env = True
+
+            def post(self, *args, **kwargs):
+                return response
+
+        old_session = MODULE.requests.Session
+        old_chain = MODULE.model_chain
+        MODULE.requests.Session = FakeSession
+        MODULE.model_chain = lambda: ["free-model"]
+        try:
+            ok, note = MODULE.keepalive("token", "uid")
+        finally:
+            MODULE.requests.Session = old_session
+            MODULE.model_chain = old_chain
+        self.assertFalse(ok)
+        self.assertIn("非账号风控", note)
+
+    def test_keepalive_11140_still_raises_account_restricted(self):
+        response = Response(403, {"code": 11140, "msg": "request illegal"})
+
+        class FakeSession:
+            def __init__(self):
+                self.trust_env = True
+
+            def post(self, *args, **kwargs):
+                return response
+
+        old_session = MODULE.requests.Session
+        old_chain = MODULE.model_chain
+        MODULE.requests.Session = FakeSession
+        MODULE.model_chain = lambda: ["free-model"]
+        try:
+            with self.assertRaises(MODULE.AccountRestricted):
+                MODULE.keepalive("token", "uid")
+        finally:
+            MODULE.requests.Session = old_session
+            MODULE.model_chain = old_chain
+
     def test_preflight_stops_on_11140_before_refresh_or_writes(self):
         MODULE.post_json = lambda *args, **kwargs: Response(
             403, {"code": 11140, "msg": "request illegal"})

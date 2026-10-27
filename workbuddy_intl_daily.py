@@ -427,14 +427,30 @@ def keepalive(token, uid):
             session.trust_env = False
             response = session.post(BASE + CHAT_PATH, headers=chat_headers(token, uid),
                                     json=body, timeout=60, verify=False, stream=True)
-            ok = response.status_code == 200
+            status = response.status_code
+            payload = {}
+            detail = ""
+            if status != 200:
+                payload = json_of(response)
+                try:
+                    detail = response.text[:500]
+                except Exception:
+                    detail = ""
             try:
                 response.close()
             except Exception:
                 pass
-            if ok:
+            if status == 200:
                 return True, model
-            last = "HTTP %s" % response.status_code
+            if is_account_restricted(status, payload or detail):
+                raise AccountRestricted(
+                    "WorkBuddy 国际版账号受限（HTTP %s / 11140）" % status)
+            if status == 403:
+                last = "HTTP 403（模型无权限，非账号风控）"
+            else:
+                last = "HTTP %s" % status
+        except AccountRestricted:
+            raise
         except Exception as error:
             last = str(error)
     return False, last or "未知错误"
@@ -585,7 +601,8 @@ def main():
                 web_ok, web_note = False, "已跳过（--no-keepalive）"
             else:
                 keep_ok, keep_note = keepalive(account["token"], account["uid"])
-                log("   %s 保活: %s" % ("✅" if keep_ok else "⚠️", keep_note))
+                keep_icon = "✅" if keep_ok else ("ℹ️" if "非账号风控" in str(keep_note) else "⚠️")
+                log("   %s 保活: %s" % (keep_icon, keep_note))
                 web_ok, web_note = web_conversation(account["token"], account["uid"])
                 log("   %s 网页会话: %s" % ("✅" if web_ok else "⚠️", web_note))
             message = day_completed_note(message, available, active, checked,
