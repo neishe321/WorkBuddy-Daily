@@ -1,5 +1,12 @@
 # 更新日志
 
+## v3.26（2026-10-28）
+
+- 修复 Issue #39：`Model_chat_GLM5.2` / `create_canvas` / `Buddy_App_QQ` 等任务不再下发时，`prog()` 返回 `(None, None, None)`，而旧判断 `st not in ("completed", "claimed")` 对 `None` 恒为真 → 继续对已下线任务发真实对话，实测每轮白扣 0.12–0.16 积分。现统一按「未下发 → 跳过」处理并在日志标注。
+- 覆盖范围：`t_chat_n`、`t_canvas_automation`（`create_canvas` / `automation_1` / `playbook_prompt`）、`t_buddy_apps`，以及桌面任务 `RichMeow_Chat` / `skill_1` 的 need 判定（未下发不再触发桌面对话）。
+- 采用「守卫而不归档」：与 `workstation_expert` 同策略，任务若重新下发会自动恢复；归档说明见 `archive/README.md`。
+- 新增 4 项「任务未下发不发请求」回归，测试总数 46 项。
+
 ## v3.25（2026-10-27）
 
 - 修复 Issue #37：`black_cat` 未出现在当前任务列表时直接提示“任务未下发”并跳过，不再硬跑 3 次夜聊制造假失败。

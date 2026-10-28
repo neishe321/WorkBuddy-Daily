@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.25
+🌱 WorkBuddy Daily - 全能签到脚本 v3.26
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -63,6 +63,10 @@
                              多个用逗号/分号分隔，如 UID_aaa,UID_bbb）
    SERVERCHAN_SENDKEY        【可选】Server酱 微信推送（免费每天 5 条）：https://sct.ftqq.com
                              sctp 开头的是「方糖」专属通道，脚本会自动走对应域名
+   WORKBUDDY_NOTIFY          【可选】推送策略，默认 always（每次运行都推，与原行为一致）
+                             always → 每次都推
+                             fail   → 仅本轮有异常时推（签到未确认、账号异常中断）
+                             0      → 完全关闭推送
    WECOM_WEBHOOK             【可选】企业微信群机器人（完整 URL 或仅 key）
    DINGTALK_WEBHOOK          【可选】钉钉群机器人 webhook（安全设置：自定义关键词或加签）
    DINGTALK_SECRET           【可选】钉钉加签密钥（机器人选「加签」时必填）
@@ -1713,11 +1717,14 @@ def t_daily_activity(s, uid, nick, log):
         log("   🔥每日活跃: 已上报")
 
 
-def t_sign(s, uid, nick, log):
+def t_sign(s, uid, nick, log, status_out=None):
     """每日签到 + 签到活动读数（连签天数 / 累计积分 / 连签奖励日）
 
     先查活动状态，确认在活动期且今天未签才 POST。daily-checkin 对瞬时错误
     （网络/5xx）有界重试，但空 200、业务失败或没有 credit 的响应不再写成成功。
+
+    `status_out` 为调用方传入的 dict，用于回传签到结论供通知策略判断：
+      checked_in   True=今天确实已签（含幂等命中「今天已签到」）
     """
     try:
         status_response = api_retry(
@@ -1746,6 +1753,8 @@ def t_sign(s, uid, nick, log):
         return
     if status_data.get("today_checked_in") in (True, 1):
         log("   ✅签到: 今天已签到%s" % _checkin_tail(s))
+        if status_out is not None:
+            status_out["checked_in"] = True
         t_daily_activity(s, uid, nick, log)
         return
 
@@ -1773,17 +1782,23 @@ def t_sign(s, uid, nick, log):
         log("   ✅签到成功 +%s积分%s%s" % (
             claim_data.get("credit"), _checkin_tail(s),
             "（状态稍后刷新）" if pending else ""))
+        if status_out is not None:
+            status_out["checked_in"] = True
         t_daily_activity(s, uid, nick, log)
         return
     if _api_code_ok(claim_code) and any(
             marker in message_lower for marker in ("已签到", "已领取", "already")):
         log("   ✅签到: %s%s" % (message, _checkin_tail(s)))
+        if status_out is not None:
+            status_out["checked_in"] = True
         t_daily_activity(s, uid, nick, log)
         return
     if claim_code in (10001, "10001"):
         fresh = _checkin_status(s)
         if fresh.get("today_checked_in") in (True, 1):
             log("   ✅签到: 状态回读确认今日已签%s" % _checkin_tail(s))
+            if status_out is not None:
+                status_out["checked_in"] = True
             t_daily_activity(s, uid, nick, log)
             return
         log("   ❌签到未确认: code 10001 但状态未显示今日已签 %s" % message[:60])
@@ -1910,6 +1925,10 @@ def t_buddy_apps(s, uid, nick, log):
     """发现应用/企鹅教师助手：desktop_buddy5_sequence + report_desktop_events"""
     for task in ("Buddy_App", "Buddy_App_QQ"):
         st, cur, tgt = prog(s, task)
+        if st is None:
+            # 未下发（如 Buddy_App_QQ 已下线）→ 不发 buddyapp 五连
+            log("   %s: 当前任务列表未下发（可能已下线），跳过" % task)
+            continue
         if st in ("completed", "claimed"):
             continue
         buddy_id = QQ_TPL if "QQ" in task else "buddy-app-default"
@@ -1986,6 +2005,10 @@ def t_chat_n(s, uid, nick, log, code, n, prompts):
     """通用聊天任务: chat_5 / Model_chat_GLM5.2"""
     for i in range(n):
         st, cur, tgt = prog(s, code)
+        if st is None:
+            # 任务未下发（已下线/未开放）：继续发真实对话只会白扣积分
+            log("   %s: 当前任务列表未下发（可能已下线），跳过" % code)
+            return
         if st in ("completed", "claimed") or (cur or 0) >= (tgt or n):
             break
         conv_id, txt = webchat(s, code, prompts[i % len(prompts)])
@@ -2122,7 +2145,10 @@ def t_canvas_automation(s, uid, nick, log):
     为 wbx_design_canvas_task_create(+open) 与 playbook_cta_click/playbook_prompt_send 挂在真实
     conversationId/requestId 上；未点亮时回落旧的 web 域裸事件。自动化任务用真实 rrule 对象形状。
     """
-    if prog(s, "create_canvas")[0] not in ("completed", "claimed"):
+    canvas_st = prog(s, "create_canvas")[0]
+    if canvas_st is None:
+        log("   设计创意画布: 当前任务列表未下发（可能已下线），跳过")
+    elif canvas_st not in ("completed", "claimed"):
         def _canvas_evs(cid, mid):
             return [{"eventCode": "wbx_design_canvas_task_create", "conversationId": cid, "requestId": mid,
                      "source": "summon_keyword", "isCustomModel": False, "name": "", "inputLength": 12,
@@ -2137,7 +2163,9 @@ def t_canvas_automation(s, uid, nick, log):
                                   {"eventCode": "wbx_design_canvas_task_create"}])
             time.sleep(3)
     st, cur, tgt = prog(s, "automation_1")
-    if st not in ("completed", "claimed"):
+    if st is None:
+        log("   自动化任务: 当前任务列表未下发（可能已下线），跳过")
+    elif st not in ("completed", "claimed"):
         report(s, uid, nick, [{"eventCode": "agent_task_created", "source": "CLOUD", "name": "", "mode": "craft",
                                "requestModelId": "default", "task_mode": "automation",
                                "isAutomationBackground": True},
@@ -2153,7 +2181,10 @@ def t_canvas_automation(s, uid, nick, log):
                                "prompt": "每周五自动整理本周工作，生成一份周报。"},
                               {"eventCode": "automated_task_execute", "action": "execute"}])
         time.sleep(3)
-    if prog(s, "playbook_prompt")[0] not in ("completed", "claimed"):
+    playbook_st = prog(s, "playbook_prompt")[0]
+    if playbook_st is None:
+        log("   优秀灵感: 当前任务列表未下发（可能已下线），跳过")
+    elif playbook_st not in ("completed", "claimed"):
         def _pb_evs(cid, mid):
             payload = {"id": PLAYBOOK_CASE["id"], "name": PLAYBOOK_CASE["name"],
                        "type": PLAYBOOK_CASE["type"], "categoryId": "", "categoryName": ""}
@@ -4354,9 +4385,14 @@ def run_account(idx, acc, do_desktop):
     except Exception as e:
         log("   ⚠️领奖预扫异常: %s" % str(e)[:80])
     # 桌面任务先做（新账号必须先有真实桌面会话，否则接受会被回滚、遥测不计数）
-    need_rich = prog(s, "RichMeow_Chat")[0] not in ("completed", "claimed")
-    need_skill = prog(s, "skill_1")[0] not in ("completed", "claimed")
+    rich_st = prog(s, "RichMeow_Chat")[0]
+    skill_st = prog(s, "skill_1")[0]
+    # 未下发（None）＝该任务当前不可做：不能当「未完成」去跑桌面对话，否则白扣积分
+    need_rich = rich_st is not None and rich_st not in ("completed", "claimed")
+    need_skill = skill_st is not None and skill_st not in ("completed", "claimed")
     desktop_skipped = False
+    if rich_st is None or skill_st is None:
+        log("  🖥️ 桌面任务: 有任务未下发（RichMeow=%s skill_1=%s），未下发项不执行" % (rich_st, skill_st))
     if (need_rich or need_skill) and not want("desktop", "RichMeow_Chat", "skill_1"):
         log("  🖥️ 桌面任务: 按配置跳过（desktop）")
         need_rich = need_skill = False
@@ -4403,7 +4439,8 @@ def run_account(idx, acc, do_desktop):
     # 前置：无 Buddy 实例时，其余任务 accept 会被服务端拒绝（prerequisite not met: first_buddy）
     t_first_buddy(s, uid, nick, log)
     t_accept_all(s, uid, nick, log)
-    _run("每日签到", ["checkin"], lambda: t_sign(s, uid, nick, log))
+    _checkin_state = {}
+    _run("每日签到", ["checkin"], lambda: t_sign(s, uid, nick, log, _checkin_state))
     _run("召唤3次专家团", ["Expert_team_use_3"], lambda: t_team_3(s, uid, nick, log))
     _run("发现应用/企鹅教师助手", ["Buddy_App", "Buddy_App_QQ"], lambda: t_buddy_apps(s, uid, nick, log))
     _run("和平精英主题", ["Hp_Appearance"], lambda: t_theme(s, uid, nick, log))
@@ -4459,6 +4496,8 @@ def run_account(idx, acc, do_desktop):
                                        verify=False)).get("data") or {})
     summary.update({"done": done, "total": len(st_all), "rest": rest,
                     "level": prof2.get("level", "?"), "energy": energy})
+    # 签到结论：供 WORKBUDDY_NOTIFY 判断本轮是否「正常」
+    summary["checked_in"] = bool(_checkin_state.get("checked_in"))
     log("🏁 %s: 完成%s/%s 等级%s 剩余: %s" % (mask_phone(acc.get("note", "")), done, len(st_all), prof2.get("level", "?"),
                                              ", ".join(rest) if rest else "无"))
     return msgs, summary
@@ -4852,6 +4891,34 @@ def main():
             summaries.append(sm)
             time.sleep(2)
     # 推送摘要（完整日志见青龙日志/控制台）
+    _notify_or_skip(summaries)
+
+
+def _notify_ok(summaries):
+    """本轮是否「一切正常」。
+
+    判据只看签到结论：成功分支（含幂等命中「今天已签到」）会写 checked_in=True。
+    账号级异常中断（run_account 抛错）也视为不正常——那种 summary 没有
+    checked_in 字段，自然落到 False。
+    """
+    if not summaries:
+        return False
+    return all(bool(sm.get("checked_in")) for sm in summaries)
+
+
+def _notify_or_skip(summaries):
+    """按 WORKBUDDY_NOTIFY 策略决定是否推送。
+
+    always（默认，保持原行为）  每次运行都推
+    fail                        仅本轮不「一切正常」时推
+    0 / off / none              完全不推
+    """
+    mode = (os.environ.get("WORKBUDDY_NOTIFY") or "always").strip().lower()
+    if mode in ("0", "off", "no", "false", "none"):
+        return
+    if mode == "fail" and _notify_ok(summaries):
+        print("ℹ️ 本轮无异常，按 WORKBUDDY_NOTIFY=fail 跳过推送")
+        return
     send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))
 
 
