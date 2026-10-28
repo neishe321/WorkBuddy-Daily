@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.23
+🌱 WorkBuddy Daily - 全能签到脚本 v3.25
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -165,7 +165,7 @@
    · locked 任务：任务行 locked=true（未到上线时间）直接跳过并给出解锁日，不空跑不误判
    · mp 对话 id：conversationId=UUID v4；requestId/traceId/rootRequestId=32 hex 毫秒前缀
    · 瞬时错误重试：每日签到/余额/用量对网络与 5xx 做 2s/4s 有界重试，业务错误不重试
-   · 凭据体检：续期前本地看 RT/AT 结构与签发域（typ=Offline / codebuddy.cn realm），
+   · 凭据体检：续期前本地看 RT/AT 结构与签发域（typ=Offline / 国内 realm），
      把 12153 token format error 提前翻译成“粘反了 / 粘错了文件 / 截断了”
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
    · 推送渠道：PushPlus / Bark / WxPusher / Server酱 / 企业微信 / 钉钉 / 青龙默认通知，配了哪个推哪个（都没配只提示）
@@ -615,7 +615,7 @@ def _token_sanity(rt, at):
     """凭据本地体检：把 RT/AT 的结构问题翻译成可执行的排障提示（不联网）。
 
     合法 CN WorkBuddy 凭据（实测 2026-09-28）：
-      · AT：RS256 JWT，typ=Bearer，iss=https://www.codebuddy.cn/auth/realms/copilot
+      · AT：RS256 JWT，typ=Bearer，iss 为 codebuddy.cn 或 workbuddy.cn 的 copilot realm
       · RT：HS512 JWT，typ=Offline，iss/aud 同为上述 realm，azp=console
     服务端对不合规凭据只回一句 12153 ... token format error，这里提前说清楚是哪一种。
     """
@@ -639,8 +639,10 @@ def _token_sanity(rt, at):
                 typ, "很可能把 AT 粘到了 RT 位置，正确顺序是 手机号:AT:RT" if typ == "Bearer" else "字段粘错了"))
         if name == "AT" and typ and typ != "Bearer":
             tips.append("AT 的 typ=%s（应为 Bearer）——AT/RT 可能写反了" % typ)
-        if iss and ("codebuddy.cn" not in iss):
-            tips.append("%s 的签发域是 %s，不是 CN 站（www.codebuddy.cn/auth/realms/copilot）——国际版/其他应用的 token 在 CN 刷不了" % (name, iss[:70]))
+        if iss and iss not in (
+                "https://www.codebuddy.cn/auth/realms/copilot",
+                "https://www.workbuddy.cn/auth/realms/copilot"):
+            tips.append("%s 的签发域是 %s，不在已知的国内 WorkBuddy 签发域中，请核对凭据来源" % (name, iss[:70]))
     return tips
 
 
@@ -817,6 +819,49 @@ def auto_refresh():
         print("      3) 该 RT 已被其他工具轮换过——最稳：python workbuddy_login.py 重新登录拿最新一行")
 
 
+def _refresh_account_once(acc, log):
+    """账号请求遇 401 时只刷新一次并回写状态；刷新失败不冒充成功。"""
+    refresh_token = str(acc.get("refresh_token") or "")
+    if not refresh_token:
+        log("  ❌ 401 后需要续期，但该账号没有 RT，无法自动恢复")
+        return False
+    try:
+        access_token, next_refresh = refresh_one(refresh_token)
+    except Exception as exc:
+        log("  ❌ 401 后自动续期异常: %s" % str(exc)[:80])
+        return False
+    if not access_token:
+        log("  ❌ 401 后自动续期失败: %s" % str(next_refresh)[:100])
+        return False
+    user = jwt_user(access_token)
+    if not user or user == "?":
+        user = str(acc.get("note") or "")
+    store = {}
+    if os.path.exists(REFRESH_STORE):
+        try:
+            store = json.load(open(REFRESH_STORE, encoding="utf-8"))
+        except Exception:
+            store = {}
+    if user:
+        store[user] = {
+            "refresh_token": next_refresh,
+            "access_token": access_token,
+            "updated": time.strftime("%Y-%m-%d %H:%M"),
+        }
+        try:
+            with open(REFRESH_STORE, "w", encoding="utf-8") as handle:
+                json.dump(store, handle, ensure_ascii=False, indent=1)
+            _rebuild_token_file(store)
+        except Exception as exc:
+            log("  ⚠️ 续期成功但状态回写失败: %s" % str(exc)[:80])
+    acc["access_token"] = access_token
+    acc["refresh_token"] = next_refresh
+    if user:
+        acc["note"] = user
+    log("  🔄 401 后已续期一次，重试当前账号")
+    return True
+
+
 def load_accounts():
     auto_refresh()  # 依据 RT 变量/json 续期，并同步 token 文件
     # 续期池优先：与变量实时同步、以手机号为名；本地 token 文件仅作回退
@@ -824,7 +869,9 @@ def load_accounts():
     if os.path.exists(REFRESH_STORE):
         try:
             store = json.load(open(REFRESH_STORE, encoding="utf-8"))
-            accs = [{"note": user, "access_token": v.get("access_token", "")}
+            accs = [{"note": user,
+                     "access_token": v.get("access_token", ""),
+                     "refresh_token": v.get("refresh_token", "")}
                     for user, v in store.items()]
             if accs:
                 no_at = [a["note"] for a in accs if not a["access_token"]]
@@ -880,6 +927,8 @@ if ONLY is not None:
     ACCOUNTS = [ACCOUNTS[ONLY]]
 WRITE_GAP = 1.5  # 写动作间隔秒数（--gap 可覆盖，最低 1.0）
 MP_CHAT_GAP = 45.0  # mp 对话事件“真人节奏”间隔秒数（上游实测 45s；--mp-gap / WORKBUDDY_MP_GAP 可覆盖）
+MP_TARGET_WAIT_ROUNDS = 30
+MP_TARGET_WAIT_SECONDS = 2.5
 QUERY_ONLY = "--query" in sys.argv
 NO_DESKTOP = "--no-desktop" in sys.argv
 if "--gap" in sys.argv:
@@ -1950,6 +1999,9 @@ def t_chat_n(s, uid, nick, log, code, n, prompts):
 
 def t_black_cat(s, uid, nick, log):
     st, cur, tgt = prog(s, "black_cat")
+    if st is None:
+        log("   夜猫子: 当前任务列表未下发 black_cat（可能已下线），跳过")
+        return
     if st in ("completed", "claimed"):
         log("   夜猫子: 已 %s %s/%s" % (st, cur, tgt))
         return
@@ -3607,6 +3659,19 @@ def _mp_task_row(s, code):
     return None
 
 
+def _wait_mp_target(s, code, label, log):
+    """accept 后 target<=0 表示进度尚未下发；有界回读，禁止按 1 冒领。"""
+    for _ in range(max(1, MP_TARGET_WAIT_ROUNDS)):
+        time.sleep(max(0.0, MP_TARGET_WAIT_SECONDS))
+        status, current, target = _mp_prog(s, code)
+        if status in ("completed", "claimed"):
+            return status, current, target
+        if target is not None and target > 0:
+            return status, current, target
+    log("   %s: target 仍未下发，留待下一轮，不按 1 冒领" % label)
+    return None
+
+
 def _mp_do_task(s, uid, nick, code, log, events_fn, label, target=1, pace=False):
     """小程序任务通用流程：mp 查询 → accept → 判据上报 → 回读 → claim。
 
@@ -3650,9 +3715,23 @@ def _mp_do_task(s, uid, nick, code, log, events_fn, label, target=1, pace=False)
             else:
                 log("   %s: 已领取，跳过" % label)
             return
-    # 缺口计算：cur 可能为 None（未激活时 progress 全空）→ 用 target 兜底
+    # target<=0 = 进度尚未下发，不能按 1 猜；有界回读后仍为空则留到下一轮。
+    if tgt is None or tgt <= 0:
+        state = _wait_mp_target(s, code, label, log)
+        if state is None:
+            return
+        st, cur, tgt = state
+        if st in ("completed", "claimed"):
+            if st == "completed":
+                _mp_claim(s, code, log)
+            else:
+                log("   %s: 已领取，跳过" % label)
+            return
+    # 缺口计算：cur 可能为 None（未激活时 progress 全空）
     cur = cur or 0
-    tgt = tgt or target
+    if tgt is None or tgt <= 0:
+        log("   %s: target 无效，跳过" % label)
+        return
     need = max(1, tgt - cur)
     try:
         sent = 0
@@ -4213,8 +4292,17 @@ def run_account(idx, acc, do_desktop):
     log("╭─ 👤 账号%d  %s" % (idx, mask_phone(acc.get("note", ""))))
     # 先探成长域：企业版账号在这里就能识别（无个人成长体系），
     # 避免把上游 403 误报成「凭据失效」、也避免对注定被拒的端点空发请求。
-    rp = s.get(BASE + "/v2/activity/growth/profile", timeout=25, verify=False)
-    pj = _json_or_empty(rp)
+    for probe_attempt in (1, 2):
+        rp = s.get(BASE + "/v2/activity/growth/profile", timeout=25, verify=False)
+        pj = _json_or_empty(rp)
+        if probe_attempt == 1 and rp.status_code == 401:
+            if _refresh_account_once(acc, log):
+                tok = acc.get("access_token", "")
+                uid = uid_of(tok)
+                nick = nickname_of(tok)
+                s = new_api(tok)
+                continue
+        break
     if is_account_restricted(rp.status_code, pj or rp.text):
         log("  🚫 WorkBuddy 账号受限（HTTP %s / 11140）：本轮停止，不刷新、不重试" % rp.status_code)
         log("     这不等同于 Token 过期；请先在官方客户端确认账号状态")

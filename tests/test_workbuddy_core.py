@@ -1,4 +1,5 @@
 import ast
+import base64
 import contextlib
 import hashlib
 import io
@@ -83,6 +84,28 @@ class FakeSession:
 
 
 class CoreBehaviorTests(unittest.TestCase):
+    def test_token_sanity_recognizes_domestic_issuers_without_trusting_lookalikes(self):
+        namespace = load_functions("_jwt_payload_local", "_token_sanity",
+                                   json=json, base64=base64)
+        def token(issuer, kind):
+            payload = base64.urlsafe_b64encode(json.dumps(
+                {"iss": issuer, "typ": kind}, separators=(",", ":")
+            ).encode()).decode().rstrip("=")
+            return "eyJ." + payload + ".signature"
+        sanity = namespace["_token_sanity"]
+        for issuer in ("https://www.codebuddy.cn/auth/realms/copilot",
+                       "https://www.workbuddy.cn/auth/realms/copilot"):
+            with self.subTest(issuer=issuer):
+                self.assertEqual([], sanity(token(issuer, "Offline"), token(issuer, "Bearer")))
+        for issuer in ("https://codebuddy.cn.evil.example/auth/realms/copilot",
+                       "https://www.workbuddy.cn.evil.example/auth/realms/copilot",
+                       "https://www.codebuddy.ai/auth/realms/copilot"):
+            with self.subTest(issuer=issuer):
+                self.assertTrue(any("签发域" in tip for tip in
+                                    sanity(token(issuer, "Offline"), "")))
+        self.assertTrue(any("typ=Bearer" in tip for tip in
+                            sanity(token("https://www.workbuddy.cn/auth/realms/copilot", "Bearer"), "")))
+
     def test_claim_ready_prefers_claimable_rows_and_correct_platform(self):
         desktop_tasks = {
             "code": 0,
@@ -376,6 +399,87 @@ class CoreBehaviorTests(unittest.TestCase):
             object(), "uid", "nick", logs.append)
         self.assertEqual([], claimed)
         self.assertIn("进度未点亮", " ".join(logs))
+
+    def test_mp_task_target_zero_waits_without_fake_progress(self):
+        reported = []
+        claimed = []
+        module = load_functions(
+            "_mp_do_task", "_wait_mp_target",
+            _mp_task_row=lambda session, code: {
+                "task_code": code,
+                "accept_status": "accepted",
+                "progress": {"current": 0, "target": 0},
+            },
+            _mp_prog=lambda session, code: ("accepted", 0, 0),
+            _mp_claim=lambda session, code, log:
+                claimed.append(code) or True,
+            mp_report=lambda session, uid, nick, events:
+                reported.append(events) or 200,
+            time=type("Time", (), {
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+            MP_TARGET_WAIT_ROUNDS=2,
+            MP_TARGET_WAIT_SECONDS=0,
+            WRITE_GAP=0,
+            MP_CHAT_GAP=0,
+        )
+        logs = []
+        module["_mp_do_task"](
+            object(), "uid", "nick", "Sequential_Tasks_6", logs.append,
+            lambda index: [{"eventCode": "chat_request_send"}],
+            "小程序对话×10", target=10,
+        )
+        self.assertEqual([], reported)
+        self.assertEqual([], claimed)
+        self.assertIn("不按 1 冒领", " ".join(logs))
+
+    def test_401_refresh_helper_updates_state_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
+            module = load_functions(
+                "_refresh_account_once",
+                os=os, json=json,
+                time=type("Time", (), {
+                    "strftime": staticmethod(lambda fmt: "2026-10-27 12:00"),
+                }),
+                REFRESH_STORE=store_path,
+                refresh_one=lambda rt: ("new-access", "new-refresh"),
+                jwt_user=lambda token: "user-1",
+                _rebuild_token_file=lambda store: None,
+            )
+            account = {
+                "note": "old-note",
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+            }
+            logs = []
+            self.assertTrue(
+                module["_refresh_account_once"](account, logs.append))
+            self.assertEqual("new-access", account["access_token"])
+            self.assertEqual("new-refresh", account["refresh_token"])
+            self.assertEqual("user-1", account["note"])
+            with open(store_path, encoding="utf-8") as handle:
+                store = json.load(handle)
+            self.assertEqual(
+                "new-refresh", store["user-1"]["refresh_token"])
+            self.assertIn("已续期一次", " ".join(logs))
+
+    def test_black_cat_missing_task_does_not_run_fake_chat_attempts(self):
+        chats = []
+        module = load_functions(
+            "t_black_cat",
+            prog=lambda session, code: (None, None, None),
+            within_night_window=lambda: True,
+            beijing_now=lambda: type("Now", (), {"hour": 23})(),
+            webchat=lambda *args: chats.append(args) or ("conv", "reply"),
+            time=type("Time", (), {
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+        )
+        logs = []
+        module["t_black_cat"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], chats)
+        self.assertIn("未下发 black_cat", " ".join(logs))
 
     def test_claim_ready_is_idempotent_across_scans(self):
         class Session:
