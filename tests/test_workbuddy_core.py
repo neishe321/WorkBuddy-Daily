@@ -7,8 +7,10 @@ import json
 import math
 import os
 import re
+import sys
 import tempfile
 import time
+import types
 import unittest
 import uuid
 from pathlib import Path
@@ -83,6 +85,13 @@ class FakeSession:
         return self.responses.pop(0)
 
 
+def jwt_token(payload):
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    return "eyJ." + encoded + ".sig"
+
+
 class CoreBehaviorTests(unittest.TestCase):
     def test_token_sanity_recognizes_domestic_issuers_without_trusting_lookalikes(self):
         namespace = load_functions("_jwt_payload_local", "_token_sanity",
@@ -94,11 +103,13 @@ class CoreBehaviorTests(unittest.TestCase):
             return "eyJ." + payload + ".signature"
         sanity = namespace["_token_sanity"]
         for issuer in ("https://www.codebuddy.cn/auth/realms/copilot",
-                       "https://www.workbuddy.cn/auth/realms/copilot"):
+                       "https://www.workbuddy.cn/auth/realms/copilot",
+                       "https://copilot.tencent.com/auth/realms/copilot"):
             with self.subTest(issuer=issuer):
                 self.assertEqual([], sanity(token(issuer, "Offline"), token(issuer, "Bearer")))
         for issuer in ("https://codebuddy.cn.evil.example/auth/realms/copilot",
                        "https://www.workbuddy.cn.evil.example/auth/realms/copilot",
+                       "https://copilot.tencent.com.evil.example/auth/realms/copilot",
                        "https://www.codebuddy.ai/auth/realms/copilot"):
             with self.subTest(issuer=issuer):
                 self.assertTrue(any("签发域" in tip for tip in
@@ -436,6 +447,7 @@ class CoreBehaviorTests(unittest.TestCase):
     def test_401_refresh_helper_updates_state_once(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
+            refresh_calls = []
             module = load_functions(
                 "_refresh_account_once",
                 os=os, json=json,
@@ -443,7 +455,8 @@ class CoreBehaviorTests(unittest.TestCase):
                     "strftime": staticmethod(lambda fmt: "2026-10-27 12:00"),
                 }),
                 REFRESH_STORE=store_path,
-                refresh_one=lambda rt: ("new-access", "new-refresh"),
+                refresh_one=lambda rt, at="": (
+                    refresh_calls.append((rt, at)) or ("new-access", "new-refresh")),
                 jwt_user=lambda token: "user-1",
                 _rebuild_token_file=lambda store: None,
             )
@@ -463,6 +476,284 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertEqual(
                 "new-refresh", store["user-1"]["refresh_token"])
             self.assertIn("已续期一次", " ".join(logs))
+            self.assertEqual([("old-refresh", "old-access")], refresh_calls)
+
+    def test_refresh_one_sends_cn_header_subset_and_empty_body(self):
+        session = FakeSession([FakeResponse(payload={
+            "code": 0,
+            "data": {"accessToken": "new-at", "refreshToken": "new-rt"},
+        })])
+        requests_module = type("Requests", (), {
+            "Session": staticmethod(lambda: session),
+        })
+        module = load_functions(
+            "refresh_one",
+            requests=requests_module,
+            REFRESH_URL="https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+            REFRESH_DOMAIN="www.workbuddy.cn",
+            uid_of=lambda token: "uid-1",
+            _new_message_id=lambda: "0123456789abcdef0123456789abcdef",
+        )
+        self.assertEqual(("new-at", "new-rt"),
+                         module["refresh_one"]("old-rt", "old-at"))
+        method, url, kwargs = session.calls[0]
+        self.assertEqual("POST", method)
+        self.assertEqual(
+            "https://copilot.tencent.com/v2/plugin/auth/token/refresh", url)
+        self.assertEqual({}, kwargs["json"])
+        self.assertEqual({
+            "X-Refresh-Token": "old-rt",
+            "X-Auth-Refresh-Source": "plugin",
+            "Content-Type": "application/json",
+            "X-Request-ID": "0123456789abcdef0123456789abcdef",
+            "X-Domain": "www.workbuddy.cn",
+            "Authorization": "Bearer old-at",
+            "X-User-Id": "uid-1",
+        }, kwargs["headers"])
+
+    def test_refresh_one_without_at_keeps_legacy_identity_shape(self):
+        session = FakeSession([FakeResponse(payload={
+            "code": 0,
+            "data": {"accessToken": "new-at"},
+        })])
+        requests_module = type("Requests", (), {
+            "Session": staticmethod(lambda: session),
+        })
+        module = load_functions(
+            "refresh_one",
+            requests=requests_module,
+            REFRESH_URL="https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+            REFRESH_DOMAIN="www.workbuddy.cn",
+            uid_of=lambda token: "should-not-be-used",
+            _new_message_id=lambda: "0123456789abcdef0123456789abcdef",
+        )
+        module["refresh_one"]("old-rt")
+        headers = session.calls[0][2]["headers"]
+        self.assertNotIn("Authorization", headers)
+        self.assertNotIn("X-User-Id", headers)
+        self.assertEqual({
+            "X-Refresh-Token",
+            "X-Auth-Refresh-Source",
+            "Content-Type",
+            "X-Request-ID",
+            "X-Domain",
+        }, set(headers))
+
+    def test_module_import_can_refresh_due_account_with_uid_header(self):
+        """ACCOUNTS 初始化早于 uid_of 时，续期会 NameError 且请求根本发不出去。"""
+        now = int(time.time())
+        old_at = jwt_token({
+            "typ": "Bearer", "sub": "sub-1",
+            "preferred_username": "13800000000", "exp": now - 60,
+        })
+        old_rt = jwt_token({
+            "typ": "Offline", "sub": "sub-1",
+            "preferred_username": "13800000000",
+        })
+        new_at = jwt_token({
+            "typ": "Bearer", "sub": "sub-1",
+            "preferred_username": "13800000000", "exp": now + 86400 * 30,
+        })
+        new_rt = jwt_token({
+            "typ": "Offline", "sub": "sub-1",
+            "preferred_username": "13800000000", "jti": "new",
+        })
+        calls = []
+
+        class Session:
+            trust_env = True
+
+            def post(self, url, **kwargs):
+                calls.append((url, kwargs.get("headers", {})))
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"accessToken": new_at, "refreshToken": new_rt},
+                })
+
+        fake_requests = types.ModuleType("requests")
+        fake_requests.Session = Session
+        previous_requests = sys.modules.get("requests")
+        previous_state = os.environ.get("WORKBUDDY_STATE_DIR")
+        previous_env = os.environ.get("WORKBUDDY_REFRESH_TOKEN")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["WORKBUDDY_STATE_DIR"] = temp_dir
+            os.environ["WORKBUDDY_REFRESH_TOKEN"] = "13800000000:%s:%s" % (
+                old_at, old_rt)
+            sys.modules["requests"] = fake_requests
+            namespace = {
+                "__name__": "workbuddy_import_probe",
+                "__file__": str(SOURCE_PATH),
+                "__builtins__": __builtins__,
+            }
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    exec(compile(SOURCE, str(SOURCE_PATH), "exec"), namespace)
+            finally:
+                if previous_requests is not None:
+                    sys.modules["requests"] = previous_requests
+                else:
+                    sys.modules.pop("requests", None)
+                if previous_state is None:
+                    os.environ.pop("WORKBUDDY_STATE_DIR", None)
+                else:
+                    os.environ["WORKBUDDY_STATE_DIR"] = previous_state
+                if previous_env is None:
+                    os.environ.pop("WORKBUDDY_REFRESH_TOKEN", None)
+                else:
+                    os.environ["WORKBUDDY_REFRESH_TOKEN"] = previous_env
+
+        self.assertEqual(1, len(calls), "续期请求应实际发出，不能被 NameError 吞掉")
+        self.assertEqual("sub-1", calls[0][1].get("X-User-Id"))
+        self.assertEqual(1, len(namespace["ACCOUNTS"]))
+        self.assertEqual(new_rt, namespace["ACCOUNTS"][0]["refresh_token"])
+
+    def test_env_merge_repeated_runs_preserve_rotated_refresh_token(self):
+        """相同 env 输入重复运行：按 JWT subject 合并，不能覆盖已轮换的 RT。"""
+        now = int(time.time())
+        old_at = jwt_token({
+            "typ": "Bearer", "sub": "sub-1",
+            "preferred_username": "13800000000", "exp": now + 86400 * 30,
+        })
+        old_rt = jwt_token({
+            "typ": "Offline", "sub": "sub-1",
+            "preferred_username": "13800000000", "jti": "original",
+        })
+        rotated_at = jwt_token({
+            "typ": "Bearer", "sub": "sub-1",
+            "preferred_username": "13800000000", "exp": now + 86400 * 30,
+        })
+        rotated_rt = jwt_token({
+            "typ": "Offline", "sub": "sub-1",
+            "preferred_username": "13800000000", "jti": "rotated",
+        })
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
+            with open(store_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "old-note": {
+                        "refresh_token": rotated_rt,
+                        "access_token": rotated_at,
+                        "updated": time.strftime("%Y-%m-%d %H:%M"),
+                    },
+                }, handle, ensure_ascii=False)
+            previous_env = os.environ.get("WORKBUDDY_REFRESH_TOKEN")
+            os.environ["WORKBUDDY_REFRESH_TOKEN"] = "new-note:%s:%s" % (
+                old_at, old_rt)
+            refresh_calls = []
+            module = load_functions(
+                "auto_refresh", "_account_identity", "_parse_env_tokens",
+                "_token_kind", "_token_user", "_jwt_claims",
+                os=os, json=json, base64=base64, time=time,
+                REFRESH_STORE=store_path,
+                TOKEN_FILE=os.path.join(temp_dir, "WORKBUDDY_ACCESS_TOKEN.txt"),
+                refresh_one=lambda rt, at="": (
+                    refresh_calls.append((rt, at)) or (rotated_at, rotated_rt)),
+                _token_sanity=lambda rt, at: [],
+                _rebuild_token_file=lambda store: None,
+            )
+            try:
+                outputs = []
+                for _ in range(2):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        module["auto_refresh"]()
+                    outputs.append(output.getvalue())
+            finally:
+                if previous_env is None:
+                    os.environ.pop("WORKBUDDY_REFRESH_TOKEN", None)
+                else:
+                    os.environ["WORKBUDDY_REFRESH_TOKEN"] = previous_env
+            with open(store_path, encoding="utf-8") as handle:
+                store = json.load(handle)
+
+        self.assertEqual(["old-note"], list(store))
+        self.assertEqual(rotated_rt, store["old-note"]["refresh_token"])
+        self.assertEqual([], refresh_calls)
+        self.assertFalse(any("新增" in line for line in outputs))
+
+    def test_env_merge_falls_back_to_user_when_tokens_have_no_subject(self):
+        now = int(time.time())
+        old_at = jwt_token({"typ": "Bearer", "exp": now + 86400 * 30})
+        old_rt = jwt_token({"typ": "Offline"})
+        rotated_rt = jwt_token({"typ": "Offline", "jti": "rotated"})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
+            with open(store_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "13800000000": {
+                        "refresh_token": rotated_rt,
+                        "access_token": old_at,
+                        "updated": time.strftime("%Y-%m-%d %H:%M"),
+                    },
+                }, handle, ensure_ascii=False)
+            previous_env = os.environ.get("WORKBUDDY_REFRESH_TOKEN")
+            os.environ["WORKBUDDY_REFRESH_TOKEN"] = "13800000000:%s:%s" % (
+                old_at, old_rt)
+            module = load_functions(
+                "auto_refresh", "_account_identity", "_parse_env_tokens",
+                "_token_kind", "_token_user", "_jwt_claims",
+                os=os, json=json, base64=base64, time=time,
+                REFRESH_STORE=store_path,
+                TOKEN_FILE=os.path.join(temp_dir, "WORKBUDDY_ACCESS_TOKEN.txt"),
+                refresh_one=lambda rt, at="": (old_at, rotated_rt),
+                _token_sanity=lambda rt, at: [],
+                _rebuild_token_file=lambda store: None,
+            )
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    module["auto_refresh"]()
+            finally:
+                if previous_env is None:
+                    os.environ.pop("WORKBUDDY_REFRESH_TOKEN", None)
+                else:
+                    os.environ["WORKBUDDY_REFRESH_TOKEN"] = previous_env
+            with open(store_path, encoding="utf-8") as handle:
+                store = json.load(handle)
+
+        self.assertEqual(rotated_rt, store["13800000000"]["refresh_token"])
+        self.assertEqual(1, len(store))
+
+    def test_env_merge_without_stable_identity_preserves_existing_account(self):
+        now = int(time.time())
+        at = jwt_token({"typ": "Bearer", "exp": now + 86400 * 30})
+        rt = jwt_token({"typ": "Offline", "jti": "env"})
+        rotated_rt = jwt_token({"typ": "Offline", "jti": "rotated"})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
+            with open(store_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "13800000000": {
+                        "refresh_token": rotated_rt,
+                        "access_token": at,
+                        "updated": time.strftime("%Y-%m-%d %H:%M"),
+                    },
+                }, handle, ensure_ascii=False)
+            previous_env = os.environ.get("WORKBUDDY_REFRESH_TOKEN")
+            # AT:RT 且两个 token 都没有 sub / 手机号：没有稳定身份
+            os.environ["WORKBUDDY_REFRESH_TOKEN"] = "%s:%s" % (at, rt)
+            module = load_functions(
+                "auto_refresh", "_account_identity", "_parse_env_tokens",
+                "_token_kind", "_token_user", "_jwt_claims",
+                os=os, json=json, base64=base64, time=time,
+                REFRESH_STORE=store_path,
+                TOKEN_FILE=os.path.join(temp_dir, "WORKBUDDY_ACCESS_TOKEN.txt"),
+                refresh_one=lambda rt, at="": (at, rotated_rt),
+                _token_sanity=lambda rt, at: [],
+                _rebuild_token_file=lambda store: None,
+            )
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    module["auto_refresh"]()
+            finally:
+                if previous_env is None:
+                    os.environ.pop("WORKBUDDY_REFRESH_TOKEN", None)
+                else:
+                    os.environ["WORKBUDDY_REFRESH_TOKEN"] = previous_env
+            with open(store_path, encoding="utf-8") as handle:
+                store = json.load(handle)
+
+        self.assertEqual(["13800000000"], list(store))
+        self.assertEqual(rotated_rt, store["13800000000"]["refresh_token"])
 
     def test_black_cat_missing_task_does_not_run_fake_chat_attempts(self):
         chats = []
@@ -644,6 +935,55 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual(2, len(session.stops))
         self.assertTrue(session.stops[0].endswith("/old-00/stop"))
 
+    def test_web_conversation_prune_is_account_wide_not_prefix_scoped(self):
+        """账号级 10 条上限：其他专家前缀的活跃会话也必须能被清掉。"""
+        class Session:
+            def __init__(self):
+                self.create_count = 0
+                self.stops = []
+
+            def get(self, url, **kwargs):
+                names = ("expert-douyinyin", "expert-maidehao",
+                         "expert-shangjia-xuanchuan", "expert-bowangwang")
+                rows = [{
+                    "id": "old-%02d" % i,
+                    "name": "%s-%08x" % (names[i % len(names)], i),
+                    "status": "working",
+                    "createdAt": "2026-10-22T10:%02d:00+08:00" % i,
+                } for i in range(10)]
+                return FakeResponse(payload={"data": {"conversations": rows}})
+
+            def post(self, url, **kwargs):
+                if url.endswith("/conversations"):
+                    self.create_count += 1
+                    if self.create_count == 1:
+                        return FakeResponse(
+                            429, {"code": 10105,
+                                  "msg": "maximum number of active conversations(10)"})
+                    return FakeResponse(
+                        payload={"code": 0,
+                                 "data": {"conversationId": "new-conv"}})
+                if url.endswith("/stop"):
+                    self.stops.append(url)
+                    return FakeResponse(payload={"code": 0, "data": {}})
+                return FakeResponse(payload={"code": 0, "data": {}})
+
+        module = load_functions(
+            "_web_conversation_limit_hit", "_web_conversation_action",
+            "_web_conversation_prune", "_web_conversation_create",
+            BASE="https://example.test",
+            WEB_CONVERSATIONS_PATH="/console/webchat/conversations",
+            WEB_CONVERSATION_ACTIVE_STATUSES=("working", "creating", "pending"),
+            WEB_CONVERSATION_PRUNE_KEEP=8,
+            requests=requests, json=json, uuid=uuid,
+        )
+        session = Session()
+        conv_id = module["_web_conversation_create"](
+            session, "expert-douyinyin")
+        self.assertEqual("new-conv", conv_id)
+        self.assertEqual(2, len(session.stops))
+        self.assertTrue(session.stops[0].endswith("/old-00/stop"))
+
     def test_makeup_candidates_use_server_calendar_and_exclude_made_up_dates(self):
         module = load_functions("_dig", "_makeup_candidates", re=re, math=math)
         streak_body = {
@@ -803,7 +1143,8 @@ class CoreBehaviorTests(unittest.TestCase):
 
         integration = load_functions(
             "_parse_expert_deeplink", "_expert_id_from_jump_url",
-            "_growth_task_rows", "_growth_task_row", "_expert_spec_for_task",
+            "_growth_task_rows", "_growth_task_row", "_expert_task_row",
+            "_expert_spec_for_task",
             parse_qs=parse_qs, urlparse=urlparse, re=re,
             _EXPERT_ID_RE=re.compile(r"^ex_[A-Za-z0-9]{6,64}$"),
             _TRUSTED_JUMP_HOST_SUFFIXES=(
@@ -811,6 +1152,7 @@ class CoreBehaviorTests(unittest.TestCase):
             EXPERT_TASK_SPECS=specs,
             TASK_NAME_CN=names,
             BASE="https://example.test",
+            _mp_task_row=lambda session, code: None,
         )
         spec = integration["_expert_spec_for_task"](
             Session(), "expert_use_maidehao")
@@ -906,6 +1248,7 @@ class CoreBehaviorTests(unittest.TestCase):
             }),
             _EXPERT_ID_RE=re.compile(r"^ex_[A-Za-z0-9]{6,64}$"),
             prog=lambda session, code: states.pop(0),
+            _expert_prog=lambda session, code: states.pop(0),
             _market_expert_by_id=lambda session, keyword, expected_id: {
                 "name": "斗音音",
                 "profession": "抖音策略师",
@@ -973,6 +1316,7 @@ class CoreBehaviorTests(unittest.TestCase):
             }),
             _EXPERT_ID_RE=re.compile(r"^ex_[A-Za-z0-9]{6,64}$"),
             prog=lambda session, code: states.pop(0),
+            _expert_prog=lambda session, code: states.pop(0),
             _market_expert_by_id=lambda session, keyword, expected_id: {
                 "id": "ex_FutureExpert1",
                 "name": "未来专家昵称",
@@ -1005,6 +1349,66 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual("未来职业", actual["expertTitle"])
         self.assertEqual("2.0.0", actual["version"])
         self.assertEqual("LOCAL", actual["mode"])
+
+    def test_local_expert_flow_accepts_not_accepted_task_before_chat(self):
+        """运行中才解锁的专家任务会停在 not_accepted，必须先补 accept。"""
+        states = [("not_accepted", None, None), ("completed", 1, 1),
+                  ("completed", 1, 1)]
+        accepted = []
+        captured = {}
+
+        def webchat2(session, name, prompt, meta):
+            captured["chat"] = (name, prompt, meta)
+            return "conv-accepted", "OK", "cmb-0123456789abcdef0123456789abcdef"
+
+        module = load_functions(
+            "_run_local_expert_task",
+            re=re, uuid=uuid, json=json,
+            time=type("Time", (), {
+                "time": staticmethod(time.time),
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+            _EXPERT_ID_RE=re.compile(r"^ex_[A-Za-z0-9]{6,64}$"),
+            prog=lambda session, code: states.pop(0),
+            _expert_prog=lambda session, code: states.pop(0),
+            _accept_expert_task=lambda session, code, log: (
+                accepted.append(code) or True),
+            _market_expert_by_id=lambda session, keyword, expected_id: {
+                "name": "斗音音",
+                "profession": "抖音策略师",
+                "version": "1.0.2",
+            },
+            get_normal_experts=lambda count: [],
+            webchat2=webchat2,
+            desktop_chat_sequence=lambda uid, nick, conv, req, msg: [],
+            report_desktop_events=lambda session, uid, nick, events: 200,
+            report=lambda *args, **kwargs: 200,
+            _new_message_id=lambda: "fallback-message",
+            _new_conversation_id=lambda: "fallback-conversation",
+        )
+        logs = []
+        module["_run_local_expert_task"](
+            object(), "uid-1", "nick", logs.append,
+            "expert_use_douyinyin",
+            {"id": "ex_Dynamic12345", "name": "斗音音",
+             "profession": "抖音策略师", "version": "1.0.2",
+             "slug": "douyinyin"},
+            conv_name="expert-douyinyin",
+        )
+        self.assertEqual(["expert_use_douyinyin"], accepted)
+        self.assertIn("chat", captured)
+        self.assertIn("completed 1/1", " ".join(logs))
+
+    def test_expert_prog_falls_back_to_mp_when_desktop_list_omits_task(self):
+        """UI 能看到、桌面列表没下发时，专家任务必须回落 MP 口径。"""
+        module = load_functions(
+            "_expert_prog",
+            prog=lambda session, code: (None, None, None),
+            _mp_prog=lambda session, code: ("not_accepted", 0, 1),
+        )
+        self.assertEqual(
+            ("not_accepted", 0, 1),
+            module["_expert_prog"](object(), "expert_use_douyinyin"))
 
     def test_expert_use_tasks_claim_on_desktop_even_when_mp_rows_exist(self):
         codes = {
@@ -1062,17 +1466,66 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertTrue(all(headers is None for _, headers in session.posts))
         self.assertIn("达标补领完成: 4 项", " ".join(logs))
 
+    def test_mp_only_expert_task_claims_with_mp_headers(self):
+        """专家任务只在 MP 列表出现时，claim 也必须走 MP 口径。"""
+        mp_tasks = {
+            "data": {"tasks": [{
+                "task_code": "expert_use_douyinyin",
+                "accept_status": "accepted",
+                "progress": {"current": 1, "target": 1},
+            }]},
+        }
+        desktop_tasks = {"data": {"tasks": []}}
+
+        class Session:
+            def __init__(self):
+                self.posts = []
+
+            def get(self, url, **kwargs):
+                return FakeResponse(
+                    payload=mp_tasks if kwargs.get("headers") else desktop_tasks)
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs.get("headers")))
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"credit": 50, "energy": 5},
+                })
+
+        module = load_functions(
+            "_api_code_ok", "_claim_response_ok", "claim", "_mp_claim",
+            "claim_ready_tasks",
+            _as_int=lambda value, default=0: int(value or default),
+            BASE="https://example.test",
+            MP_HEADER={"X-Client-Platform": "miniprogram"},
+            MP_TASK_CODES=set(),
+            DESKTOP_ONLY_TASK_CODES=frozenset({
+                "expert_use_maidehao", "expert_use_douyinyin",
+                "expert_use_shangjia_xuanchuan", "expert_use_bowangwang",
+            }),
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+        )
+        session = Session()
+        logs = []
+        module["claim_ready_tasks"](session, logs.append)
+
+        self.assertEqual(1, len(session.posts))
+        url, headers = session.posts[0]
+        self.assertIn("expert_use_douyinyin", url)
+        self.assertEqual({"X-Client-Platform": "miniprogram"}, headers)
+        self.assertIn("达标补领完成: 1 项", " ".join(logs))
+
     def test_desktop_fingerprint_matches_cn_current_shape(self):
         module = load_functions(
             "derive_id", "desktop_fingerprint",
             hashlib=hashlib, time=time,
-            DESKTOP_RELEASE_CN=1792029498676,
-            DESKTOP_COMMIT_CN="db0e9b51b7fa0b383f41f5b0b83dd442c8557918",
-            DESKTOP_VERSION_CN="5.8.3",
+            DESKTOP_RELEASE_CN=1789632000000,
+            DESKTOP_COMMIT_CN="c41253385fa07bebfcae8a7a4728914f09af96d0",
+            DESKTOP_VERSION_CN="5.9.3",
         )
         fp = module["desktop_fingerprint"]("uid-1", "nick")
-        self.assertEqual("5.8.3", fp["ideVersion"])
-        self.assertEqual("5.8.3", fp["extVersion"])
+        self.assertEqual("5.9.3", fp["ideVersion"])
+        self.assertEqual("5.9.3", fp["extVersion"])
         self.assertEqual("10.0.28000", fp["osVersion"])
         self.assertEqual(8, fp["cpuCores"])
         self.assertEqual(16, fp["memorySize"])
@@ -1098,10 +1551,10 @@ class CoreBehaviorTests(unittest.TestCase):
             "_new_message_id", "derive_id", "desktop_fingerprint",
             "report_desktop_events",
             hashlib=hashlib, time=time, uuid=uuid, requests=requests_module,
-            DESKTOP_RELEASE_CN=1792029498676,
-            DESKTOP_COMMIT_CN="db0e9b51b7fa0b383f41f5b0b83dd442c8557918",
-            DESKTOP_VERSION_CN="5.8.3",
-            DESKTOP_UA="WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0",
+            DESKTOP_RELEASE_CN=1789632000000,
+            DESKTOP_COMMIT_CN="c41253385fa07bebfcae8a7a4728914f09af96d0",
+            DESKTOP_VERSION_CN="5.9.3",
+            DESKTOP_UA="WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0",
             DESKTOP_BASE="https://copilot.tencent.com",
         )
         source = type("Source", (), {
@@ -1156,7 +1609,7 @@ class CoreBehaviorTests(unittest.TestCase):
                     "t_daily_activity",
                     os=os, json=json, time=time, uuid=uuid,
                     CBDOMAIN="https://www.codebuddy.cn",
-                    WORKBUDDY_UA_CN="WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0",
+                    WORKBUDDY_UA_CN="WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0",
                     beijing_today=lambda: __import__("datetime").date(2026, 10, 22),
                     _env_enabled=lambda name, default=True: True,
                     _heatmap_today_score=heatmap_score,
@@ -1195,7 +1648,7 @@ class CoreBehaviorTests(unittest.TestCase):
                     "t_daily_activity",
                     os=os, json=json, time=fake_time, uuid=uuid,
                     CBDOMAIN="https://www.codebuddy.cn",
-                    WORKBUDDY_UA_CN="WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0",
+                    WORKBUDDY_UA_CN="WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0",
                     beijing_today=lambda: __import__("datetime").date(2026, 10, 22),
                     _env_enabled=lambda name, default=True: True,
                     _heatmap_today_score=lambda session: 0,

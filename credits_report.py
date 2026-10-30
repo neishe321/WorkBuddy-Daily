@@ -5,7 +5,10 @@
   · 余额口径：POST /billing/meter/get-user-resource-summary
               → data.Packages[].CycleRemainCapacity 之和（与 App 顶部"剩余积分"一致）
   · 到期口径：POST /billing/meter/get-user-resource
-              → data.Response.Data.Accounts[]，每笔积分带 CycleStartTime/CycleEndTime
+              → 分页查询 data.Response.Data.Accounts[]；每笔积分按
+                CycleCapacityRemain[Precise] 与 CapacityType 解析
+  · 企业账号：store 条目显式带 enterpriseId 时，改读
+              /v2/billing/meter/get-enterprise-user-usage（404 回退无 /v2 的网页路径）
 
 积分分两种，规则不同：
   · CapacityType=4  月度套餐：每月 1 日重置，当月最后一天 23:59:59 清零，不结转
@@ -27,6 +30,7 @@ import argparse
 import base64
 import datetime
 import json
+import math
 import os
 import re
 import ssl
@@ -34,16 +38,26 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 UA = "WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/2.137.1"
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
 
+CREDITS_PAGE_SIZE = 100
+CREDITS_PRODUCT_CODE = "p_tcaca"
+CREDITS_PACKAGE_STATUS = [0, 3]
+CREDITS_EXPIRY_WINDOW_DAYS = 365 * 101
+REFRESH_DOMAIN = "www.workbuddy.cn"
+
 
 # ---------------------------------------------------------------- 基础工具
-def post(url, token, extra_headers=None):
-    req = urllib.request.Request(url, data=b"{}", method="POST", headers={
+def post(url, token, extra_headers=None, body=None):
+    payload = {} if body is None else body
+    data = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers={
         "Authorization": "Bearer " + token,
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -56,14 +70,30 @@ def post(url, token, extra_headers=None):
         return resp.status, json.loads(resp.read().decode("utf-8", "replace"))
 
 
-def refresh_cn(rt):
+def _new_request_id():
+    """CN 刷新请求 ID：32 hex，前 48 bit 为毫秒时间戳（与主脚本同形态）。"""
+    return "%012x%s" % (int(time.time() * 1000), uuid.uuid4().hex[:20])
+
+
+def refresh_cn(rt, at=""):
     """国内版 RT 刷新（口径同 workbuddy_daily.py refresh_one）→ (新AT, 新RT) 或 (None, 错误)"""
+    headers = {
+        "X-Refresh-Token": rt,
+        "X-Auth-Refresh-Source": "plugin",
+        "Content-Type": "application/json", "Accept": "application/json",
+        "X-Request-ID": _new_request_id(),
+        "X-Domain": REFRESH_DOMAIN,
+        "User-Agent": UA,
+    }
+    at = str(at or "").strip()
+    if at:
+        headers["Authorization"] = "Bearer " + at
+        uid = str(jwt_claims(at).get("sub") or "").strip()
+        if uid:
+            headers["X-User-Id"] = uid
     req = urllib.request.Request(
         "https://copilot.tencent.com/v2/plugin/auth/token/refresh",
-        data=b"{}", method="POST", headers={
-            "X-Refresh-Token": rt, "X-Auth-Refresh-Source": "plugin",
-            "Content-Type": "application/json", "Accept": "application/json",
-            "User-Agent": UA})
+        data=b"{}", method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=25, context=CTX) as resp:
         d = json.loads(resp.read().decode("utf-8", "replace"))
     inner = d.get("data") or {}
@@ -137,20 +167,107 @@ def f(v):
 def parse_end(text):
     """'2026-10-31 23:59:59' → datetime；失败返回 None"""
     try:
-        return datetime.datetime.strptime(str(text)[:19], "%Y-%m-%d %H:%M:%S")
+        return datetime.datetime.strptime(
+            str(text).strip().replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
     except Exception:
         return None
 
 
-def fetch_accounts(base, token):
-    """到期明细（Accounts 数组）；HTTP 401 抛给上层走刷新重试"""
-    _, body = post(base + "/billing/meter/get-user-resource", token)
-    return ((body.get("data") or {}).get("Response", {}).get("Data", {}) or {}).get("Accounts") or []
+def credits_query_body(now=None):
+    """个人资源包查询体：分页 + 产品码 + 状态 + 到期窗口（官方客户端口径）。"""
+    now = now or datetime.datetime.now()
+    end = now + datetime.timedelta(days=CREDITS_EXPIRY_WINDOW_DAYS)
+    return {
+        "PageNumber": 1,
+        "PageSize": CREDITS_PAGE_SIZE,
+        "ProductCode": CREDITS_PRODUCT_CODE,
+        "Status": list(CREDITS_PACKAGE_STATUS),
+        "PackageEndTimeRangeBegin": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "PackageEndTimeRangeEnd": end.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _extract_accounts(body):
+    """保留旧版 data.Response.Data.Accounts，并兼容 data.Accounts。"""
+    if not isinstance(body, dict):
+        return []
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return []
+    response = data.get("Response")
+    if isinstance(response, dict):
+        inner = response.get("Data")
+        if isinstance(inner, dict) and isinstance(inner.get("Accounts"), list):
+            return inner["Accounts"]
+    if isinstance(data.get("Accounts"), list):
+        return data["Accounts"]
+    return []
+
+
+def fetch_accounts(base, token, now=None):
+    """到期明细（Accounts 数组）；HTTP 401 抛给上层走刷新重试。"""
+    _, body = post(base + "/billing/meter/get-user-resource", token,
+                   body=credits_query_body(now))
+    return _extract_accounts(body)
 
 
 def fetch_summary(base, token):
     _, body = post(base + "/billing/meter/get-user-resource-summary", token)
     return body.get("data") or {}
+
+
+def _optional_num(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _precise_num(account, key):
+    for name in (key + "Precise", key):
+        if name not in account:
+            continue
+        number = _optional_num(account.get(name))
+        if number is not None:
+            return number
+    return None
+
+
+def _account_remain(account, monthly=False):
+    """优先 cycle 家族；月度资源缺 cycle 字段时不拿 pool 家族冒充余额。"""
+    if ("CycleCapacityRemain" in account
+            or "CycleCapacityRemainPrecise" in account):
+        return _precise_num(account, "CycleCapacityRemain")
+    if monthly:
+        return None
+    return _precise_num(account, "CapacityRemain")
+
+
+def _capacity_type(account):
+    value = _optional_num(account.get("CapacityType"))
+    if value is None or not value.is_integer():
+        return None
+    return int(value)
+
+
+def _is_monthly(account):
+    """CapacityType=4 为月度资源；旧回包按 CycleEndTime/DeductionEndTime 启发式判定。"""
+    capacity_type = _capacity_type(account)
+    if capacity_type is not None:
+        return capacity_type == 4
+    cycle_end = parse_end(account.get("CycleEndTime"))
+    deduction_end = parse_end(account.get("DeductionEndTime"))
+    return bool(cycle_end and deduction_end
+                and deduction_end - cycle_end > datetime.timedelta(days=2))
+
+
+def _account_end(account, monthly):
+    if monthly:
+        return parse_end(account.get("CycleEndTime")) or parse_end(
+            account.get("DeductionEndTime"))
+    return parse_end(account.get("ExpiredTime")) or parse_end(
+        account.get("CycleEndTime"))
 
 
 def expiry_line(accounts, now, days=7):
@@ -160,21 +277,33 @@ def expiry_line(accounts, now, days=7):
       ⏰ 10-24 到期 382 分（11 天后）｜10-31 月包清零 500｜11-12 全到期
     窗口（days）内有到期时，额外返回预警行。
     """
-    live = [a for a in accounts if f(a.get("CycleCapacityRemain")) > 0 and parse_end(a.get("CycleEndTime"))]
+    live = []
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        monthly = _is_monthly(account)
+        remain = _account_remain(account, monthly)
+        if remain is None or remain <= 0:
+            continue
+        end = _account_end(account, monthly)
+        if not end:
+            continue
+        if not monthly and end <= now:
+            continue
+        live.append((remain, monthly, end))
     if not live:
         return "", ""
-    live.sort(key=lambda a: parse_end(a["CycleEndTime"]))
+    live.sort(key=lambda item: item[2])
     horizon = now + datetime.timedelta(days=days)
 
     buckets = []  # [end_dt, remain_sum, is_monthly]
-    for a in live:
-        dt = parse_end(a["CycleEndTime"])
+    for remain, monthly, dt in live:
         if buckets and buckets[-1][0] == dt:
-            buckets[-1][1] += f(a.get("CycleCapacityRemain"))
-            if str(a.get("CapacityType")) == "4":
+            buckets[-1][1] += remain
+            if monthly:
                 buckets[-1][2] = True
         else:
-            buckets.append([dt, f(a.get("CycleCapacityRemain")), str(a.get("CapacityType")) == "4"])
+            buckets.append([dt, remain, monthly])
 
     def seg(b):
         dt, v, monthly = b
@@ -218,12 +347,89 @@ def expiry_line(accounts, now, days=7):
     return line, warn
 
 
+def _enterprise_id_of(entry):
+    """只读显式账号字段；不从 token_source 或模糊 JWT 声明猜企业身份。"""
+    if not isinstance(entry, dict):
+        return ""
+    for key in ("enterpriseId", "enterprise_id"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+    return ""
+
+
+def _field_num(data, *names):
+    for name in names:
+        if name in data:
+            number = _optional_num(data.get(name))
+            if number is not None:
+                return number
+    return None
+
+
+def parse_enterprise_usage(body):
+    """解析企业用量：limit_num/limitNum + used_num/usedNum；-1 表示不限量。"""
+    if not isinstance(body, dict) or body.get("code") not in (0, 200, "0", "200"):
+        return None
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return None
+    inner = data.get("Data")
+    if not isinstance(inner, dict):
+        inner = data.get("data")
+    if not isinstance(inner, dict):
+        inner = data
+    limit = _field_num(inner, "limit_num", "limitNum")
+    used = _field_num(inner, "used_num", "usedNum")
+    if limit is None:
+        return None
+    if limit == -1:
+        if used is not None and used < 0:
+            return None
+        return {"unlimited": True, "limit": None, "used": used, "remaining": None}
+    if limit < 0 or used is None or used < 0:
+        return None
+    return {
+        "unlimited": False,
+        "limit": limit,
+        "used": used,
+        "remaining": max(0.0, limit - used),
+    }
+
+
+def fetch_enterprise_usage(base, token, enterprise_id):
+    """企业用量：桌面 /v2 优先，404 回退网页无 /v2 路径。"""
+    headers = {"X-Enterprise-Id": enterprise_id}
+    uid = str(jwt_claims(token).get("sub") or "").strip()
+    if uid:
+        headers["X-User-Id"] = uid
+    paths = (
+        "/v2/billing/meter/get-enterprise-user-usage",
+        "/billing/meter/get-enterprise-user-usage",
+    )
+    for index, path in enumerate(paths):
+        try:
+            _, body = post(base + path, token, extra_headers=headers, body={})
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404 and index == 0:
+                continue
+            raise
+        usage = parse_enterprise_usage(body)
+        if usage is None:
+            raise ValueError("企业积分响应缺少 limit_num/used_num")
+        return usage
+    raise ValueError("企业积分接口不可用")
+
+
 # ---------------------------------------------------------------- 报告组装
 def report_cn(store_path, days, verbose=True):
     """国内版：多账号，逐个查余额+到期；AT 失效自动 RT 刷新重试"""
     now = datetime.datetime.now()
     try:
-        store = json.load(open(store_path, encoding="utf-8"))
+        with open(store_path, encoding="utf-8") as handle:
+            store = json.load(handle)
     except Exception as e:
         return "💰 国内积分 查询失败: %s" % str(e)[:60], []
     if not isinstance(store, dict) or not store:
@@ -234,7 +440,22 @@ def report_cn(store_path, days, verbose=True):
         at = (ent or {}).get("access_token", "")
         rt = (ent or {}).get("refresh_token", "")
         label = mask_phone(user)
+        enterprise_id = _enterprise_id_of(ent)
         try:
+            if enterprise_id:
+                usage = fetch_enterprise_usage(
+                    "https://copilot.tencent.com", at, enterprise_id)
+                if usage["unlimited"]:
+                    used = ("已用 %g" % usage["used"]
+                            if usage["used"] is not None else "已用量未返回")
+                    line = "🏢 %s 企业积分 不限量（%s）" % (label, used)
+                else:
+                    total_all += usage["remaining"]
+                    line = "🏢 %s 企业积分 剩 %g（已用 %g / 总额 %g）" % (
+                        label, usage["remaining"], usage["used"], usage["limit"])
+                line += "\n   ℹ️ 企业账号不支持每日签到"
+                lines.append(line)
+                continue
             try:
                 accounts = fetch_accounts("https://copilot.tencent.com", at)
             except urllib.error.HTTPError as e:
@@ -242,7 +463,7 @@ def report_cn(store_path, days, verbose=True):
                     raise
                 if verbose:
                     print("   🔄 %s AT 失效，用 RT 刷新" % label)
-                at, rt = refresh_cn(rt)
+                at, rt = refresh_cn(rt, at)
                 accounts = fetch_accounts("https://copilot.tencent.com", at)
             summary = fetch_summary("https://copilot.tencent.com", at)
             pkgs = summary.get("Packages") or []

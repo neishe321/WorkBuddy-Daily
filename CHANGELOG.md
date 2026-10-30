@@ -1,5 +1,62 @@
 # 更新日志
 
+## v3.34（2026-10-30）
+
+- 修复盲盒“能量不足”的时序问题：`t_blindbox` 原来在所有任务领奖之前执行，今天任务刚发的 +5 能量还没到账，盲盒只能看到旧余额。
+- 任务执行完后、徽章/盲盒/旅行/抽奖之前先调用一次 `claim_ready_tasks`，把已达标奖励结算掉；末尾保留原领奖调用兜底。
+- 真实账号验证：6 个账号的 4 类专家任务全部 `claimed 1/1`；盲盒按当前 `affordable` 开完，能量均降到 10 以下。
+
+## v3.33（2026-10-30）
+
+- 修复「UI 任务中心能看到、脚本却提示不在当前任务列表」：专家任务查询原来只读桌面 `/v2/activity/growth/tasks`；现在 `_expert_task_row` / `_expert_prog` 在桌面未命中时回落小程序口径（`X-Client-Platform: miniprogram`）。
+- `_dynamic_expert_task_codes` 同时合并桌面与 MP 的 `expert_use_*`，不再只依赖桌面列表。
+- `_accept_expert_task` 先按桌面口径 accept，失败再走 MP `_mp_accept_res`；MP-only 账号不再卡在 `task not found`。
+- `claim_ready_tasks` 区分「桌面+MP 都有」与「只在 MP 出现」：前者仍走桌面 claim，后者改用 MP claim，避免专家任务完成后无法领奖。
+- 新增 2 项回归（MP 回落、MP-only 领奖），测试总数 63 项。
+
+## v3.32（2026-10-30）
+
+- 修复动态解锁的专家任务一直停在 `not_accepted`：`_run_local_expert_task` 原来只读 `prog()`，不补 accept；任务在 `t_accept_all` 之后才出现时，真实对话和 `expert_actual_use` 都不会计入进度，日志只剩 `not_accepted None/None`。
+- 进入专家任务时若状态为 `""` / `not_accepted`，先走 `_accept_with_verify`；登记失败直接跳过，不再白跑对话。
+- 真实对话没有返回 `conversationId` 或服务端消息 ID 时输出明确诊断，不再静默 fallback。
+- `_web_conversation_prune` 改为按账号级活跃上限清理；原实现只清同 `expert-<slug>` 前缀，跨专家累计到 10 条时永远清不掉。
+- 新增 2 项回归（专家任务先 accept、跨前缀清理），测试总数 61 项。
+
+## v3.31（2026-10-30）
+
+- 修正 v3.30 的 5.9.3 构建指纹：`commit` 改为官方安装包 `5.9.3.42398134-d4692421` 的 `d46924219e79332f49c37ccebf27292f87001b19`，`releaseDate` 改为 `1793093056315`。
+- v3.30 使用的 `c4125338… / 1789632000000` 来自第三方实现，时间早于 5.8.3，不能代表 5.9.3；继续沿用会让版本号与安装清单自相矛盾。
+- UA、`DESKTOP_VERSION_CN`、事件指纹 `ideVersion` / `extVersion` 保持 5.9.3；59 项测试全部通过。
+
+## v3.30（2026-10-30）
+
+- 对齐 WorkBuddy 官方客户端 5.9.3（国内版）：桌面 UA 更新为 `WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0`，`DESKTOP_VERSION_CN` / 事件指纹 `ideVersion` 与 `extVersion` 同步 5.9.3。
+- 桌面事件指纹的 `releaseDate` / `commit` 曾更新为第三方实现的取值；v3.31 已按官方安装包元数据修正。
+- 仅调整国内版桌面指纹；国际版 5.9.3 的聊天头族仍按 pilot 处理，待真实账号抓包验证后再动。
+- 59 项测试全部通过。
+
+## v3.29（2026-10-30）
+
+- 修复 Issue #42（1）：`ACCOUNTS = load_accounts()` 在 `uid_of()` 定义前执行；v3.27 给 `refresh_one` 增加 `X-User-Id` 后，首次自动续期会触发 `NameError: name 'uid_of' is not defined`，请求根本发不出去。现将 `uid_of` 定义提前到 `refresh_one` 之前，续期恢复发送并携带 `X-User-Id`。
+- 修复 Issue #42（2）：`auto_refresh` 合并 `WORKBUDDY_REFRESH_TOKEN` 时不再用会轮换的 RT 去重，改为按 JWT `sub`（无 `sub` 时用显式 user/手机号）稳定身份合并；已存在账号不会被环境变量里的旧 RT 覆盖，无稳定身份时保留 store 现有账号。
+- v3.28 未改这条路径：v27→v28 的脚本差异仅为 `_token_sanity` 接受 `copilot.tencent.com` 签发域及版本号；`uid_of` 调用由 v3.27 的续期头改动引入。
+- 新增模块导入续期、重复运行不覆盖轮换 RT、JWT subject 合并、无稳定身份保留账号 4 项回归，测试总数 59 项。
+
+## v3.28（2026-10-30）
+
+- 修复 Issue #40：凭据体检接受 `https://copilot.tencent.com/auth/realms/copilot` 国内签发域，登录工具产出的 CN Token 不再被误报为未知来源；v3.27 的续期头修复继续生效。
+- 修复 Issue #41：GitHub Actions 工作流会自动检测国内 / 国际版 Secrets，分别运行 `workbuddy_daily.py` 与 `workbuddy_intl_daily.py`；只配置其中一种时不会空跑另一种。
+- 私有仓库持久化运行状态时同步保存 `wb_intl_tokens.json`，避免国际版轮换后的 refreshToken 在干净 runner 上丢失。
+- 补充 `copilot.tencent.com` 签发域与相似域名回归测试。
+
+## v3.27（2026-10-29）
+
+- 修复 CN Token 续期请求头：`refresh_one` 现在携带当前 AT 的 `Authorization: Bearer ...`、`X-Request-ID`（32 hex 毫秒前缀）、`X-User-Id`（AT 的 `sub`）与 `X-Domain: www.workbuddy.cn`，保留 `X-Refresh-Token` / `X-Auth-Refresh-Source` 与空 `{}` body；无 AT/uid 时不伪造身份头。
+- 修复 `credits_report.py` 个人资源包查询：`get-user-resource` 改为 `PageNumber=1` / `PageSize=100` / `ProductCode=p_tcaca` / `Status=[0,3]` + 到期时间窗；解析 `CycleCapacityRemain[Precise]`，`CapacityType=4` 按月度资源处理，并兼容旧 `CapacityRemain` / 无 `CapacityType` 回包。
+- `credits_report.py` 支持 store 条目显式带 `enterpriseId` 时只读查询 `/v2/billing/meter/get-enterprise-user-usage`（404 回退网页无 `/v2` 路径），解析 `limit_num`/`limitNum` 与 `used_num`/`usedNum`，`-1` 表示不限量；报告注明企业账号不支持每日签到，不发起签到请求。
+- 账号结构说明：`workbuddy_daily.py` 归一后的账号仍只有 `note` / `access_token` / `refresh_token`，不携带 `enterpriseId`；因此主脚本不做 JWT / `token_source` 猜测式企业识别，`credits_report.py` 仅在 store 显式字段存在时启用企业分支。
+- 新增续期头/无 AT 形态、个人查询体、月包与旧回包、企业解析/404 回退回归，测试总数 55 项。
+
 ## v3.26（2026-10-28）
 
 - 修复 Issue #39：`Model_chat_GLM5.2` / `create_canvas` / `Buddy_App_QQ` 等任务不再下发时，`prog()` 返回 `(None, None, None)`，而旧判断 `st not in ("completed", "claimed")` 对 `None` 恒为真 → 继续对已下线任务发真实对话，实测每轮白扣 0.12–0.16 积分。现统一按「未下发 → 跳过」处理并在日志标注。

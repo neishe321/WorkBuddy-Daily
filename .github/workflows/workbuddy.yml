@@ -18,7 +18,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 45   # mp 对话任务按真人节奏上报（每条 45s±10s），账号多时耗时更长
+    timeout-minutes: 60   # 国内 + 国际版串行执行，账号多时耗时更长
     env:
       TZ: Asia/Shanghai   # runner 默认 UTC：不加会把日志时间与补签日期算错一天
     steps:
@@ -41,7 +41,26 @@ jobs:
           restore-keys: |
             workbuddy-benefit-state-
 
+      - name: Detect account config
+        id: config
+        env:
+          WORKBUDDY_REFRESH_TOKEN: ${{ secrets.WORKBUDDY_REFRESH_TOKEN }}
+          WORKBUDDY_INTL_TOKENS: ${{ secrets.WORKBUDDY_INTL_TOKENS }}
+          WORKBUDDY_TOKEN: ${{ secrets.WORKBUDDY_TOKEN }}
+        run: |
+          if [ -n "$WORKBUDDY_REFRESH_TOKEN" ]; then
+            echo "cn=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cn=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$WORKBUDDY_INTL_TOKENS" ] || [ -n "$WORKBUDDY_TOKEN" ]; then
+            echo "intl=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "intl=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run WorkBuddy
+        if: steps.config.outputs.cn == 'true'
         env:
           WORKBUDDY_REFRESH_TOKEN: ${{ secrets.WORKBUDDY_REFRESH_TOKEN }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
@@ -57,7 +76,29 @@ jobs:
           WORKBUDDY_MP_GAP: ${{ secrets.WORKBUDDY_MP_GAP }}
           WORKBUDDY_MAKEUP_MAX_PER_RUN: ${{ secrets.WORKBUDDY_MAKEUP_MAX_PER_RUN }}
           WORKBUDDY_ACTIVITY_CHAT_FALLBACK: ${{ secrets.WORKBUDDY_ACTIVITY_CHAT_FALLBACK }}
+          WORKBUDDY_NOTIFY: ${{ secrets.WORKBUDDY_NOTIFY }}
         run: python workbuddy_daily.py
+
+      - name: Run WorkBuddy Intl
+        if: ${{ always() && steps.config.outputs.intl == 'true' }}
+        env:
+          WORKBUDDY_INTL_TOKENS: ${{ secrets.WORKBUDDY_INTL_TOKENS }}
+          WORKBUDDY_TOKEN: ${{ secrets.WORKBUDDY_TOKEN }}
+          WORKBUDDY_INTL_MODELS: ${{ secrets.WORKBUDDY_INTL_MODELS }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          BARK_URL: ${{ secrets.BARK_URL }}
+          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+          WXPUSHER_UID: ${{ secrets.WXPUSHER_UID }}
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
+          WORKBUDDY_NOTIFY: ${{ secrets.WORKBUDDY_NOTIFY }}
+        run: python workbuddy_intl_daily.py
+
+      - name: No account configured
+        if: ${{ always() && steps.config.outputs.cn != 'true' && steps.config.outputs.intl != 'true' }}
+        run: echo "::warning::未配置 WORKBUDDY_REFRESH_TOKEN 或 WORKBUDDY_INTL_TOKENS/WORKBUDDY_TOKEN，跳过签到。"
 
       # ⚠️ 仅在【私有仓库】中持久化令牌/福利期次状态；公开仓库会跳过，避免 RT 泄露
       - name: Persist runtime state (private repo only)
@@ -66,6 +107,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -f wb_refresh_tokens.json 2>/dev/null || true
+          git add -f wb_intl_tokens.json 2>/dev/null || true
           git add -f workbuddy_benefit_state.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "运行状态无变化"
